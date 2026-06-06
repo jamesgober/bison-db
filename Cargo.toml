@@ -9,7 +9,7 @@
 #╚═══════════════════════════════╝
 [package]
 name    = "bison-db"
-version = "0.1.0"
+version = "0.2.0"
 
 # Minimum Supported Rust Version (MSRV)
 rust-version = "1.85"
@@ -76,11 +76,22 @@ serde = { version = "1", optional = true, default-features = false, features = [
 # DEV DEPENDENCIES
 # #################################
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-proptest  = "1"
+criterion  = { version = "0.5", features = ["html_reports"] }
+proptest   = "1"
+# Exercises the `serde` feature end-to-end via a concrete data format.
+serde_json = "1"
 
 [target.'cfg(loom)'.dev-dependencies]
 loom = "0.7"
+
+
+# EXAMPLES
+# #################################
+# The JSON interop example needs the `serde` feature; gate it so a plain
+# `cargo build --examples` does not try to compile it without serde present.
+[[example]]
+name              = "json_interop"
+required-features = ["serde"]
 
 
 # BENCHMARKS

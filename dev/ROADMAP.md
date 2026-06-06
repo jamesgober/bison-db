@@ -15,11 +15,16 @@ Compiles, CI green, structure correct, no domain logic.
 
 ---
 
-## v0.2.0 -- document model + single-file store + insert/get/delete (THE HARD PART, NOT DEFERRED)
+## v0.2.0 -- document model + single-file store + insert/get/delete (DONE)
+
+Document model (`Value`/`Document`), versioned CRC-checked log-structured
+single-file store, and `insert`/`get`/`update`/`delete`/`flush` with replay-based
+crash recovery. Optional `serde` for the document model.
 
 Exit criteria:
-- [ ] Every public item has rustdoc + a runnable example.
-- [ ] Core invariants property-tested.
+- [x] Every public item has rustdoc + a runnable example.
+- [x] Core invariants property-tested (lossless round-trip; index matches file
+  after reopen).
 
 ---
 

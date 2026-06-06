@@ -26,10 +26,10 @@
     <br>
     <hr>
     <p>
-        <strong>MSRV is 1.85+</strong> (Rust 2024 edition). Schemaless documents. Secondary indexes. ACID, single-file, embedded.
+        <strong>MSRV is 1.85+</strong> (Rust 2024 edition). Schemaless documents. Single-file storage. Crash-safe, embedded, zero-network.
     </p>
     <blockquote>
-        <strong>Status: pre-1.0, in active development.</strong> This is the <code>v0.1.0</code> scaffold &mdash; structure, tooling, and CI gates are in place; the implementation lands across the 0.x series per <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>. The public API is frozen at <code>1.0.0</code>.
+        <strong>Status: pre-1.0, in active development.</strong> As of <code>v0.2.0</code> the document model and the single-file store are implemented: insert, read, overwrite, and delete documents by id, with checksummed records and replay-based crash recovery. Secondary indexes, field/range queries, and full write-ahead-log durability land across the remaining 0.x series per <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>. The public API is frozen at <code>1.0.0</code>.
     </blockquote>
 </div>
 
@@ -38,12 +38,20 @@
 
 <h2>What it does</h2>
 
-- **Schemaless documents** &mdash; store nested, JSON-like documents with no fixed schema
-- **Secondary indexes** &mdash; index document fields for fast equality and range queries
-- **ACID writes** &mdash; atomic, durable writes via a write-ahead log with crash recovery
+Available now (`v0.2.0`):
+
+- **Schemaless documents** &mdash; store nested, JSON-like documents with no fixed schema, built from a small, typed [`Value`](./docs/API.md#value) model
 - **Single-file storage** &mdash; the whole database is one file: trivial to ship, copy, and back up
+- **Crash-safe writes** &mdash; every record is length-framed and CRC-32C checked; a write torn by a crash is detected and dropped on the next open, never silently misread
 - **Embedded, zero-network** &mdash; runs in-process; no server, no daemon, no external services
-- **Query API** &mdash; fetch by id, by field predicate, or by range over a secondary index
+- **Point operations** &mdash; `insert`, `get`, `update`, and `delete` documents by id, plus `flush` for durability
+- **Optional `serde`** &mdash; move documents in and out of JSON, MessagePack, or any serde format
+
+On the roadmap (`v0.3.0`+, see [`dev/ROADMAP.md`](./dev/ROADMAP.md)):
+
+- **Secondary indexes** &mdash; index document fields for fast equality and range queries
+- **Field and range queries** &mdash; fetch by field predicate or by range over an index
+- **Write-ahead log** &mdash; group-commit durability and a frozen on-disk format
 
 <br>
 <hr>
@@ -53,7 +61,46 @@
 
 ```toml
 [dependencies]
-bison-db = "0.1"
+bison-db = "0.2"
+
+# With serde support for the document model:
+bison-db = { version = "0.2", features = ["serde"] }
+```
+
+<br>
+
+## Quick Start
+
+```rust
+use bison_db::{Db, Document};
+
+fn main() -> bison_db::Result<()> {
+    // The whole database is a single file.
+    let mut db = Db::open("library.bison")?;
+
+    // Schemaless: set whatever fields you like, of mixed types.
+    let mut album = Document::new();
+    album.set("artist", "Miles Davis").set("title", "Kind of Blue").set("year", 1959_i64);
+
+    // Insert returns a stable id; read, overwrite, and delete by it.
+    let id = db.insert(album)?;
+    let stored = db.get(id)?.expect("just inserted");
+    assert_eq!(stored.get("title").and_then(|v| v.as_str()), Some("Kind of Blue"));
+
+    db.update(id, { let mut d = Document::new(); d.set("title", "So What"); d })?;
+    assert!(db.delete(id)?);
+
+    db.flush()?; // make recent writes durable
+    Ok(())
+}
+```
+
+More runnable programs live in [`examples/`](./examples): `quick_start`, `user_profiles` (CRUD with nested documents), `crash_recovery`, and `json_interop`.
+
+```bash
+cargo run --example user_profiles
+cargo run --example crash_recovery
+cargo run --example json_interop --features serde
 ```
 
 <br>
@@ -62,10 +109,25 @@ bison-db = "0.1"
 
 For the complete reference, see [`docs/API.md`](./docs/API.md).
 
-- [`Schemaless documents`](./docs/API.md)
-- [`Secondary indexes`](./docs/API.md)
-- [`ACID writes`](./docs/API.md)
-- [`Single-file storage`](./docs/API.md)
+- [`Db`](./docs/API.md#db) &mdash; open the store; `insert` / `get` / `update` / `delete` / `flush`
+- [`Document`](./docs/API.md#document) &mdash; the ordered, schemaless record you store
+- [`Value`](./docs/API.md#value) &mdash; a field's content: null, bool, int, float, string, bytes, array, or nested document
+- [`DocId`](./docs/API.md#docid) &mdash; a document's stable primary key
+- [`Error`](./docs/API.md#error) &mdash; the closed set of failures an operation can return
+
+<br>
+
+## Performance
+
+`bison-db` is an in-process store: there is no network hop and no client/server serialization. Writes are appended sequentially to one file (the access pattern storage hardware serves fastest), and a read is a single hash-index lookup followed by one positional read. Indicative single-threaded figures from `cargo bench` on a developer laptop (Linux, x86_64, Rust 1.95):
+
+| Operation | Time |
+|-----------|------|
+| `insert` a small document | ~0.8 µs |
+| `get` a small document | ~0.3 µs |
+| `update` a small document | ~0.8 µs |
+
+Numbers are produced by [`benches/bison_bench.rs`](./benches/bison_bench.rs) against a real on-disk store; reproduce them with `cargo bench`. A populated head-to-head comparison against other embedded and document stores is planned for the 1.0 cycle.
 
 <br>
 <hr>

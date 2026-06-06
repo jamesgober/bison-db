@@ -39,6 +39,10 @@ jobs:
         run: cargo test
       - name: Test (all features)
         run: cargo test --all-features
+      - name: Build (no default features / no_std)
+        run: cargo build --no-default-features
+      - name: Build examples (all features)
+        run: cargo build --examples --all-features
       - name: Doc (all features)
         run: cargo doc --no-deps --all-features
         env:
