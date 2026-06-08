@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). Schemaless documents. Single-file storage. Crash-safe, embedded, zero-network.
     </p>
     <blockquote>
-        <strong>Status: pre-1.0 (release candidate), API frozen.</strong> As of <code>v0.8.0</code> the document model, the single-file store, secondary indexes with field and range queries, a configurable durability policy, and space-reclaiming compaction are all implemented, hardened with fuzz-tested parse/recovery paths and a randomized soak test, and <a href="./docs/PERFORMANCE.md">benchmarked head-to-head</a> against a peer engine; the <a href="./docs/FORMAT.md">on-disk format is frozen</a> (version 1) and the <a href="./dev/ROADMAP.md">public API is frozen</a> (additive-only until 1.0). What remains before <code>1.0.0</code> is a final soak.
+        <strong>Status: pre-1.0 (release candidate), API frozen.</strong> As of <code>v0.9.0</code> the document model, the single-file store, secondary indexes with field and range queries, a configurable durability policy, and space-reclaiming compaction are all implemented; hardened with fuzz-tested parse/recovery paths, a randomized soak test, and a sustained-load concurrency soak; and <a href="./docs/PERFORMANCE.md">benchmarked head-to-head</a> against a peer engine. The <a href="./docs/FORMAT.md">on-disk format is frozen</a> (version 1) and the <a href="./dev/ROADMAP.md">public API is frozen</a> (additive-only until 1.0). This is the final pre-<code>1.0.0</code> candidate.
     </blockquote>
 </div>
 
@@ -66,10 +66,10 @@ On the roadmap (`v0.6.0` &rarr; `1.0.0`, see [`dev/ROADMAP.md`](./dev/ROADMAP.md
 
 ```toml
 [dependencies]
-bison-db = "0.8"
+bison-db = "0.9"
 
 # With serde support for the document model:
-bison-db = { version = "0.8", features = ["serde"] }
+bison-db = { version = "0.9", features = ["serde"] }
 ```
 
 <br>

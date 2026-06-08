@@ -126,10 +126,23 @@ confidence, not features.
 
 ---
 
-## v0.9.0 -> v1.0.0 -- Final soak / Stable
+## v0.9.0 -- Final soak: concurrency under load (DONE)
 
-A final soak against real usage, then publish 1.0 with the API and format frozen
-here. No further API or format changes are planned before 1.0.
+- Sustained-load concurrency soak: four reader threads continuously read and
+  query a shared `Arc<RwLock<Db>>` while a writer runs 3,000 mutations
+  (insert/update/delete/compaction). Reads never panic under a changing store,
+  and the store matches the writer's model exactly once the writer finishes —
+  exercising compaction and mutation under concurrent reads.
+
+This is the last hardening step before 1.0; the API and on-disk format are frozen
+and unchanged.
+
+---
+
+## v1.0.0 -- Stable
+
+Tag and publish with the API and format frozen here. No further API or format
+changes; 1.0 is the stability commitment.
 
 ---
 

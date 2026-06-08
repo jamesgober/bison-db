@@ -18,7 +18,7 @@
 </div>
 <br>
 
-> Complete reference for every public item in `bison-db` as of `v0.8.0`, with runnable examples.
+> Complete reference for every public item in `bison-db` as of `v0.9.0`, with runnable examples.
 > The crate is pre-1.0: the surface grows across the 0.x series (see [`dev/ROADMAP.md`](../dev/ROADMAP.md)) and is frozen at `1.0.0`. Items marked _(planned)_ are not yet implemented.
 
 ## Table of Contents
@@ -48,10 +48,10 @@
 
 ```toml
 [dependencies]
-bison-db = "0.8"
+bison-db = "0.9"
 
 # Enable serde for the document model:
-bison-db = { version = "0.8", features = ["serde"] }
+bison-db = { version = "0.9", features = ["serde"] }
 ```
 
 The default `std` feature provides the file-backed [`Db`]. Disabling it
@@ -941,10 +941,10 @@ breaking change before then. The items below are **not yet implemented** and are
 listed so integrators can see the intended direction; tracked in
 [`dev/ROADMAP.md`](../dev/ROADMAP.md).
 
-- **Final soak toward 1.0** _(v0.9.0 → 1.0)_ — a soak against real usage, then
-  publish 1.0. (v0.6.0 fuzzed the parse/recovery paths; v0.7.0 added a randomized
-  soak test; v0.8.0 added a controlled head-to-head against `redb` — see
-  [`docs/PERFORMANCE.md`](./PERFORMANCE.md).)
+- **1.0.0 — Stable** — tag and publish with the API and format frozen here.
+  (v0.6.0 fuzzed the parse/recovery paths; v0.7.0 added a randomized soak test;
+  v0.8.0 added a controlled head-to-head against `redb`; v0.9.0 added a
+  sustained-load concurrency soak — see [`docs/PERFORMANCE.md`](./PERFORMANCE.md).)
 - **Read cache / memory-mapped reads** _(post-1.0)_ — close the modest point-read
   gap to memory-mapped engines; an additive optimization, not an API change.
 - **Persistent / lazily-rebuilt indexes** _(post-1.0)_ — avoid re-declaring

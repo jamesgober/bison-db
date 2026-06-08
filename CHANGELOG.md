@@ -10,6 +10,21 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-08
+
+Final soak before 1.0: concurrency under sustained load. The API and on-disk
+format remain frozen and unchanged.
+
+### Added
+
+- `tests/concurrency.rs`: a sustained-load soak test. Four reader threads
+  continuously read and run indexed queries against a shared `Arc<RwLock<Db>>`
+  while a writer performs 3,000 mutations (insert, update, delete, and
+  compaction). Reads never panic as the store changes under them, and the store
+  matches the writer's reference model exactly once the writer finishes — proving
+  the single-writer, multi-reader model holds under contention, including across
+  compaction.
+
 ## [0.8.0] - 2026-06-08
 
 Release candidate: a controlled head-to-head benchmark against a peer engine. No
@@ -208,7 +223,8 @@ Initial scaffold and repository bootstrap. No domain logic yet &mdash; this rele
 - `.github/workflows/ci.yml` (Node 24 actions; fmt, clippy, test, doc, audit, deny) and `.github/FUNDING.yml`.
 
 <!-- LINKS -->
-[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/jamesgober/bison-db/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jamesgober/bison-db/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jamesgober/bison-db/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jamesgober/bison-db/compare/v0.5.0...v0.6.0
