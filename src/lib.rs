@@ -77,10 +77,13 @@ mod value;
 #[cfg(feature = "serde")]
 mod serde_support;
 
-// The binary codec and file store are the persistence layer; they require `std`
-// for filesystem access, so the `no_std` build exposes only the document model.
+// The binary codec, secondary indexes, and file store are the persistence
+// layer; they require `std` for filesystem access, so the `no_std` build exposes
+// only the document model.
 #[cfg(feature = "std")]
 mod codec;
+#[cfg(feature = "std")]
+mod index;
 #[cfg(feature = "std")]
 mod store;
 #[cfg(feature = "std")]

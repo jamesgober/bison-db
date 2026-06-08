@@ -1,30 +1,47 @@
-# ██████╗ ███████╗██████╗ ███████╗
-# ██╔══██╗██╔════╝██╔══██╗██╔════╝
-# ██████╔╝█████╗  ██████╔╝███████╗
-# ██╔══██╗██╔══╝  ██╔═══╝ ╚════██║
-# ██║  ██║███████╗██║     ███████║
-# ╚═╝  ╚═╝╚══════╝╚═╝     ╚══════╝
-#╔═══════════════════════════════╗
-#║ Rust Efficiency & Performance ║
-#╚═══════════════════════════════╝
-[package]
+#╔══════════════════════════════════════════
+#║ ▛ 𝐁ison 𝐃𝐁                          
+#║                 _.-````'-,_   
+#║      _,.,_ ,-'`           `'-.,_
+#║    /)     (\                   '``-.
+#║   ((      ) )                      `\
+#║    \)    (_/                        )\
+#║     |       /)           '    ,'    / \
+#║     `\    ^'            '     (    /  ))
+#║       |      _/\ ,     /    ,,`\   (  "`
+#║        \Y,   |  \  \  | ````| / \_ \ 
+#║          `)_/    \  \  )    ( >  ( > 
+#║                   \( \(     |/   |/
+#║ ▙                /_(/_(   /_(  /_(   
+#╚═══════════════════════════════════════════
+#║ Bison DB 
+#║ Embedded Document Database for Rust.
+#╚═══════════════════════════════════════════
+[package] 
 name    = "bison-db"
-version = "0.2.0"
+version = "0.3.0"
 
-# Minimum Supported Rust Version (MSRV)
+# Minimum supported Rust version and edition
 rust-version = "1.85"
-edition = "2024"
+edition      = "2024"
 
-# License
+# Metadata for crates.io
 license = "Apache-2.0 OR MIT"
+readme  = "README.md"
 
-# Readme
-readme = "README.md"
+# Project Authors
+authors = [
+    "James Gober <me@jamesgober.com>"
+]
 
-# Description
+# Project URLs
+homepage      = "https://github.com/jamesgober/bison-db"
+repository    = "https://github.com/jamesgober/bison-db"
+documentation = "https://docs.rs/bison-db"
+
+# Descriptive metadata1
 description = "An embedded, document-oriented database for Rust - schemaless documents, secondary indexes, and ACID single-file storage, with zero network and zero external services."
 
-# Keywords (5 max)
+# Metadata for crates.io
 keywords = [
     "document-database",
     "embedded",
@@ -33,33 +50,30 @@ keywords = [
     "database"
 ]
 
-# Categories
+# Categorization on crates.io
 categories = [
     "database-implementations",
     "data-structures"
 ]
 
-# Links
-homepage      = "https://github.com/jamesgober/bison-db"
-repository    = "https://github.com/jamesgober/bison-db"
-documentation = "https://docs.rs/bison-db"
-
-# Authors
-authors = [
-    "James Gober <me@jamesgober.com>"
-]
-
+\# Metadata for docs.rs
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+
+
+
+#║ LIBRARY CONFIGURATION
+#╚═════════════════════════════════
 [lib]
 name = "bison_db"
 path = "src/lib.rs"
 
 
-# FEATURE FLAGS
-# #################################
+
+#║ FEATURE FLAGS
+#╚═════════════════════════════════
 [features]
 default = ["std"]
 std = []
@@ -67,14 +81,16 @@ std = []
 serde = ["dep:serde"]
 
 
-# DEPENDENCIES
-# #################################
+
+#║ DEPENDENCIES
+#╚═════════════════════════════════
 [dependencies]
 serde = { version = "1", optional = true, default-features = false, features = ["derive", "alloc"] }
 
 
-# DEV DEPENDENCIES
-# #################################
+
+#║ DEV DEPENDENCIES
+#╚═════════════════════════════════
 [dev-dependencies]
 criterion  = { version = "0.5", features = ["html_reports"] }
 proptest   = "1"
@@ -85,27 +101,38 @@ serde_json = "1"
 loom = "0.7"
 
 
-# EXAMPLES
-# #################################
-# The JSON interop example needs the `serde` feature; gate it so a plain
-# `cargo build --examples` does not try to compile it without serde present.
+
+#║ EXAMPLES
+#╚═════════════════════════════════
 [[example]]
 name              = "json_interop"
 required-features = ["serde"]
+# ---------------------------------------------------
+# The JSON interop example needs the `serde` feature; 
+# gate it so a plain  `cargo build --examples` 
+# does not try to compile it without `serde` present.
+# ---------------------------------------------------
 
 
-# BENCHMARKS
-# #################################
+
+#║ BENCHMARKS
+#╚═════════════════════════════════
 [[bench]]
 name    = "bison_bench"
 harness = false
 
 
-# RELEASE PROFILE
-# #################################
+
+#║ RELEASE PROFILE
+#╚═════════════════════════════════
 [profile.release]
 opt-level     = 3
 lto           = "fat"
 codegen-units = 1
 panic         = "abort"
 strip         = "symbols"
+
+
+#╔═════════════════════════════════
+#║ ᴇ-ᴅʙ // Embedded DB  
+#╚═════════════════════════════════

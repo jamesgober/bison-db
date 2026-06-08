@@ -10,6 +10,37 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-07
+
+Secondary indexes and field queries. Index any number of document fields, then
+query by exact value or by range. Queries also work without an index via a full
+scan, so an index is a pure speedup, never a correctness requirement.
+
+### Added
+
+- `Db::create_index` / `Db::drop_index` / `Db::indexes` — declare, remove, and
+  list ordered secondary indexes over document fields. Any number of fields may
+  be indexed.
+- `Db::find` — return the ids of documents whose field equals a given value.
+- `Db::range` — return the ids of documents whose field falls within a
+  `RangeBounds<Value>` (`a..b`, `a..=b`, `..b`, `a..`, `..`); indexed results are
+  ordered by field value.
+- A total order over `Value` (`null < bool < int < float < string < bytes <
+  array < object`, floats via `f64::total_cmp`) backing both index ordering and
+  query equality, so the indexed and scan paths always agree.
+- `secondary_indexes` example and a Criterion benchmark comparing an indexed
+  point lookup against the full-scan fallback.
+- Property test asserting indexed `find`/`range` return the same set as the
+  equivalent scan.
+
+### Changed
+
+- Indexes are maintained automatically on every insert, update, and delete.
+  `update` and `delete` now read the previous document when indexes exist, to
+  keep index entries in step with document contents.
+- Indexes are in-memory and rebuilt per session (`create_index`); they are not
+  part of the on-disk format, which stays unfrozen until v0.4.0.
+
 ## [0.2.0] - 2026-06-06
 
 The first working release: the document model and a durable single-file store.
@@ -57,6 +88,7 @@ Initial scaffold and repository bootstrap. No domain logic yet &mdash; this rele
 - `.github/workflows/ci.yml` (Node 24 actions; fmt, clippy, test, doc, audit, deny) and `.github/FUNDING.yml`.
 
 <!-- LINKS -->
-[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jamesgober/bison-db/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jamesgober/bison-db/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jamesgober/bison-db/releases/tag/v0.1.0

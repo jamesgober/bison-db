@@ -38,20 +38,21 @@
 
 <h2>What it does</h2>
 
-Available now (`v0.2.0`):
+Available now (`v0.3.0`):
 
 - **Schemaless documents** &mdash; store nested, JSON-like documents with no fixed schema, built from a small, typed [`Value`](./docs/API.md#value) model
 - **Single-file storage** &mdash; the whole database is one file: trivial to ship, copy, and back up
 - **Crash-safe writes** &mdash; every record is length-framed and CRC-32C checked; a write torn by a crash is detected and dropped on the next open, never silently misread
 - **Embedded, zero-network** &mdash; runs in-process; no server, no daemon, no external services
 - **Point operations** &mdash; `insert`, `get`, `update`, and `delete` documents by id, plus `flush` for durability
+- **Secondary indexes** &mdash; index any number of document fields; queries also work without an index, so an index is a pure speedup
+- **Field and range queries** &mdash; `find` by an exact field value, `range` over an ordered field
 - **Optional `serde`** &mdash; move documents in and out of JSON, MessagePack, or any serde format
 
-On the roadmap (`v0.3.0`+, see [`dev/ROADMAP.md`](./dev/ROADMAP.md)):
+On the roadmap (`v0.4.0`+, see [`dev/ROADMAP.md`](./dev/ROADMAP.md)):
 
-- **Secondary indexes** &mdash; index document fields for fast equality and range queries
-- **Field and range queries** &mdash; fetch by field predicate or by range over an index
 - **Write-ahead log** &mdash; group-commit durability and a frozen on-disk format
+- **Compaction** &mdash; reclaim space held by superseded and deleted records
 
 <br>
 <hr>
@@ -61,10 +62,10 @@ On the roadmap (`v0.3.0`+, see [`dev/ROADMAP.md`](./dev/ROADMAP.md)):
 
 ```toml
 [dependencies]
-bison-db = "0.2"
+bison-db = "0.3"
 
 # With serde support for the document model:
-bison-db = { version = "0.2", features = ["serde"] }
+bison-db = { version = "0.3", features = ["serde"] }
 ```
 
 <br>
@@ -95,12 +96,48 @@ fn main() -> bison_db::Result<()> {
 }
 ```
 
-More runnable programs live in [`examples/`](./examples): `quick_start`, `user_profiles` (CRUD with nested documents), `crash_recovery`, and `json_interop`.
+More runnable programs live in [`examples/`](./examples): `quick_start`, `user_profiles` (CRUD with nested documents), `secondary_indexes`, `crash_recovery`, and `json_interop`.
 
 ```bash
 cargo run --example user_profiles
+cargo run --example secondary_indexes
 cargo run --example crash_recovery
 cargo run --example json_interop --features serde
+```
+
+<br>
+
+## Querying
+
+Index any number of fields, then query by exact value or by range. Queries work
+with or without an index — declaring one only makes them faster.
+
+```rust
+use bison_db::{Db, Document, Value};
+
+fn main() -> bison_db::Result<()> {
+    let mut db = Db::open("people.bison")?;
+
+    for (name, age) in [("ada", 36_i64), ("grace", 45), ("alan", 29)] {
+        let mut d = Document::new();
+        d.set("name", name).set("age", age);
+        db.insert(d)?;
+    }
+
+    // Build indexes — there is no cap on how many fields you index.
+    db.create_index("name")?;
+    db.create_index("age")?;
+
+    // Equality: who is named "ada"?
+    let ada = db.find("name", &Value::from("ada"))?;        // Vec<DocId>
+
+    // Range: everyone aged 30..=44 (results ordered by age).
+    let thirties_forties = db.range("age", Value::from(30_i64)..=Value::from(44_i64))?;
+
+    assert_eq!(ada.len(), 1);
+    assert_eq!(thirties_forties.len(), 1); // ada (36)
+    Ok(())
+}
 ```
 
 <br>
@@ -109,7 +146,7 @@ cargo run --example json_interop --features serde
 
 For the complete reference, see [`docs/API.md`](./docs/API.md).
 
-- [`Db`](./docs/API.md#db) &mdash; open the store; `insert` / `get` / `update` / `delete` / `flush`
+- [`Db`](./docs/API.md#db) &mdash; open the store; `insert` / `get` / `update` / `delete` / `flush`; `create_index` / `find` / `range`
 - [`Document`](./docs/API.md#document) &mdash; the ordered, schemaless record you store
 - [`Value`](./docs/API.md#value) &mdash; a field's content: null, bool, int, float, string, bytes, array, or nested document
 - [`DocId`](./docs/API.md#docid) &mdash; a document's stable primary key
@@ -126,8 +163,10 @@ For the complete reference, see [`docs/API.md`](./docs/API.md).
 | `insert` a small document | ~0.8 µs |
 | `get` a small document | ~0.3 µs |
 | `update` a small document | ~0.8 µs |
+| `find` by indexed field (in a 10k-doc store) | ~60 ns |
+| `find` by full scan (in a 10k-doc store) | ~1.6 ms |
 
-Numbers are produced by [`benches/bison_bench.rs`](./benches/bison_bench.rs) against a real on-disk store; reproduce them with `cargo bench`. A populated head-to-head comparison against other embedded and document stores is planned for the 1.0 cycle.
+The last two rows are the same query with and without an index — the index turns a full scan into a B-tree point lookup. Numbers are produced by [`benches/bison_bench.rs`](./benches/bison_bench.rs) against a real on-disk store; reproduce them with `cargo bench`. A populated head-to-head comparison against other embedded and document stores is planned for the 1.0 cycle.
 
 <br>
 <hr>

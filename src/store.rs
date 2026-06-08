@@ -30,12 +30,14 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{File, OpenOptions};
+use std::ops::RangeBounds;
 use std::path::{Path, PathBuf};
 
 use crate::codec::{crc32c, decode_document, encode_document_into};
 use crate::error::{Error, Result};
+use crate::index::{SecondaryIndex, in_bounds, total_cmp_value};
 use crate::sys::{read_exact_at, write_all_at};
-use crate::value::Document;
+use crate::value::{Document, Value};
 
 /// The largest record payload the store will write or accept while reading.
 ///
@@ -201,6 +203,9 @@ pub struct Db {
     next_id: u64,
     /// Reusable buffer for framing a record, so writes do not allocate.
     scratch: Vec<u8>,
+    /// Secondary indexes by field name, built on demand and maintained on every
+    /// write. Not persisted: rebuilt via [`Db::create_index`] each session.
+    indexes: HashMap<String, SecondaryIndex>,
 }
 
 impl Db {
@@ -252,6 +257,7 @@ impl Db {
             tail: HEADER_LEN,
             next_id: 1,
             scratch: Vec::with_capacity(256),
+            indexes: HashMap::new(),
         };
 
         if file_len == 0 {
@@ -293,6 +299,7 @@ impl Db {
         let id = self.next_id;
         self.append(OP_PUT, id, Some(&doc))?;
         self.next_id = id + 1;
+        self.index_add(id, &doc);
         Ok(DocId(id))
     }
 
@@ -321,12 +328,10 @@ impl Db {
     /// # }
     /// ```
     pub fn get(&self, id: DocId) -> Result<Option<Document>> {
-        let Some(loc) = self.index.get(&id.0).copied() else {
-            return Ok(None);
-        };
-        let mut buf = vec![0u8; loc.len as usize];
-        read_exact_at(&self.file, &mut buf, loc.offset)?;
-        decode_document(&buf).map(Some)
+        match self.index.get(&id.0).copied() {
+            Some(loc) => self.read_body(loc).map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Overwrites the document stored under `id` with `doc`, returning `true` if
@@ -359,10 +364,15 @@ impl Db {
     /// # }
     /// ```
     pub fn update(&mut self, id: DocId, doc: Document) -> Result<bool> {
-        if !self.index.contains_key(&id.0) {
+        let Some(loc) = self.index.get(&id.0).copied() else {
             return Ok(false);
+        };
+        if !self.indexes.is_empty() {
+            let old = self.read_body(loc)?;
+            self.index_remove(id.0, &old);
         }
         self.append(OP_PUT, id.0, Some(&doc))?;
+        self.index_add(id.0, &doc);
         Ok(true)
     }
 
@@ -393,8 +403,12 @@ impl Db {
     /// # }
     /// ```
     pub fn delete(&mut self, id: DocId) -> Result<bool> {
-        if !self.index.contains_key(&id.0) {
+        let Some(loc) = self.index.get(&id.0).copied() else {
             return Ok(false);
+        };
+        if !self.indexes.is_empty() {
+            let old = self.read_body(loc)?;
+            self.index_remove(id.0, &old);
         }
         self.append(OP_DELETE, id.0, None)?;
         Ok(true)
@@ -555,6 +569,221 @@ impl Db {
             live_documents: self.index.len(),
             file_bytes: self.tail,
             live_bytes,
+        }
+    }
+
+    /// Builds a secondary index over `field`, making [`find`](Db::find) and
+    /// [`range`](Db::range) on that field fast point and range lookups instead of
+    /// full scans.
+    ///
+    /// The index is built by reading every live document once and recording its
+    /// value for `field`; documents without the field are skipped. From then on,
+    /// it is maintained automatically on every insert, update, and delete. Any
+    /// number of fields may be indexed — call this once per field.
+    ///
+    /// Indexes live in memory only and are **not** persisted: after reopening a
+    /// store, call this again for each field you want indexed. Calling it for a
+    /// field that is already indexed is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] or [`Error::Corrupt`] if a document cannot be read
+    /// while building the index.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> bison_db::Result<()> {
+    /// # let path = std::env::temp_dir().join("bison_db_createindex_example.bison");
+    /// # let _ = std::fs::remove_file(&path);
+    /// use bison_db::{Db, Document, Value};
+    /// let mut db = Db::open(&path)?;
+    /// db.insert({ let mut d = Document::new(); d.set("city", "Oslo"); d })?;
+    ///
+    /// db.create_index("city")?;
+    /// let hits = db.find("city", &Value::from("Oslo"))?;
+    /// assert_eq!(hits.len(), 1);
+    /// # let _ = std::fs::remove_file(&path);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn create_index(&mut self, field: &str) -> Result<()> {
+        if self.indexes.contains_key(field) {
+            return Ok(());
+        }
+        let mut index = SecondaryIndex::new();
+        let entries: Vec<(u64, BodyLoc)> = self.index.iter().map(|(id, loc)| (*id, *loc)).collect();
+        for (id, loc) in entries {
+            let doc = self.read_body(loc)?;
+            if let Some(value) = doc.get(field) {
+                index.add(value, id);
+            }
+        }
+        let _ = self.indexes.insert(field.to_string(), index);
+        Ok(())
+    }
+
+    /// Drops the secondary index over `field`, returning `true` if one existed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> bison_db::Result<()> {
+    /// # let path = std::env::temp_dir().join("bison_db_dropindex_example.bison");
+    /// # let _ = std::fs::remove_file(&path);
+    /// let mut db = bison_db::Db::open(&path)?;
+    /// db.create_index("name")?;
+    /// assert!(db.drop_index("name"));
+    /// assert!(!db.drop_index("name"));
+    /// # let _ = std::fs::remove_file(&path);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn drop_index(&mut self, field: &str) -> bool {
+        self.indexes.remove(field).is_some()
+    }
+
+    /// Returns an iterator over the names of the currently indexed fields.
+    ///
+    /// The order is unspecified.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> bison_db::Result<()> {
+    /// # let path = std::env::temp_dir().join("bison_db_indexes_example.bison");
+    /// # let _ = std::fs::remove_file(&path);
+    /// let mut db = bison_db::Db::open(&path)?;
+    /// db.create_index("a")?;
+    /// db.create_index("b")?;
+    /// assert_eq!(db.indexes().count(), 2);
+    /// # let _ = std::fs::remove_file(&path);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn indexes(&self) -> impl Iterator<Item = &str> {
+        self.indexes.keys().map(String::as_str)
+    }
+
+    /// Returns the ids of all live documents whose `field` equals `value`.
+    ///
+    /// If `field` is indexed (see [`create_index`](Db::create_index)) this is a
+    /// point lookup; otherwise it falls back to scanning every live document, so
+    /// the result is correct either way — the index only changes the speed.
+    /// Equality follows the same total order the indexes use, so a `Float` field
+    /// distinguishes `0.0` from `-0.0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] or [`Error::Corrupt`] if a document must be read
+    /// (the unindexed path) and cannot be.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> bison_db::Result<()> {
+    /// # let path = std::env::temp_dir().join("bison_db_find_example.bison");
+    /// # let _ = std::fs::remove_file(&path);
+    /// use bison_db::{Db, Document, Value};
+    /// let mut db = Db::open(&path)?;
+    /// db.insert({ let mut d = Document::new(); d.set("role", "admin"); d })?;
+    /// db.insert({ let mut d = Document::new(); d.set("role", "user"); d })?;
+    /// db.create_index("role")?;
+    ///
+    /// assert_eq!(db.find("role", &Value::from("admin"))?.len(), 1);
+    /// assert!(db.find("role", &Value::from("ghost"))?.is_empty());
+    /// # let _ = std::fs::remove_file(&path);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn find(&self, field: &str, value: &Value) -> Result<Vec<DocId>> {
+        if let Some(index) = self.indexes.get(field) {
+            return Ok(index.equal(value).into_iter().map(DocId).collect());
+        }
+        let mut out = Vec::new();
+        for (id, loc) in &self.index {
+            let doc = self.read_body(*loc)?;
+            if doc
+                .get(field)
+                .is_some_and(|v| total_cmp_value(v, value) == core::cmp::Ordering::Equal)
+            {
+                out.push(DocId(*id));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Returns the ids of all live documents whose `field` falls within `range`.
+    ///
+    /// Bounds are [`Value`]s compared with the same total order the indexes use;
+    /// any [`RangeBounds`] form works (`a..b`, `a..=b`, `..b`, `a..`, `..`).
+    /// If `field` is indexed the matches come back ordered by field value (then
+    /// id); otherwise the store scans every live document. As with
+    /// [`find`](Db::find), the index changes only the speed, not the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] or [`Error::Corrupt`] if a document must be read
+    /// (the unindexed path) and cannot be.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> bison_db::Result<()> {
+    /// # let path = std::env::temp_dir().join("bison_db_range_example.bison");
+    /// # let _ = std::fs::remove_file(&path);
+    /// use bison_db::{Db, Document, Value};
+    /// let mut db = Db::open(&path)?;
+    /// for age in [17_i64, 25, 40, 70] {
+    ///     db.insert({ let mut d = Document::new(); d.set("age", age); d })?;
+    /// }
+    /// db.create_index("age")?;
+    ///
+    /// // Working-age adults: 18..=65.
+    /// let hits = db.range("age", Value::from(18_i64)..=Value::from(65_i64))?;
+    /// assert_eq!(hits.len(), 2); // 25 and 40
+    /// # let _ = std::fs::remove_file(&path);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn range<R: RangeBounds<Value>>(&self, field: &str, range: R) -> Result<Vec<DocId>> {
+        let lo = range.start_bound();
+        let hi = range.end_bound();
+        if let Some(index) = self.indexes.get(field) {
+            return Ok(index.range(lo, hi).into_iter().map(DocId).collect());
+        }
+        let mut out = Vec::new();
+        for (id, loc) in &self.index {
+            let doc = self.read_body(*loc)?;
+            if doc.get(field).is_some_and(|v| in_bounds(v, lo, hi)) {
+                out.push(DocId(*id));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Reads and decodes the document body at `loc`.
+    fn read_body(&self, loc: BodyLoc) -> Result<Document> {
+        let mut buf = vec![0u8; loc.len as usize];
+        read_exact_at(&self.file, &mut buf, loc.offset)?;
+        decode_document(&buf)
+    }
+
+    /// Adds document `id`'s indexed field values to every secondary index.
+    fn index_add(&mut self, id: u64, doc: &Document) {
+        for (field, index) in &mut self.indexes {
+            if let Some(value) = doc.get(field) {
+                index.add(value, id);
+            }
+        }
+    }
+
+    /// Removes document `id`'s indexed field values from every secondary index.
+    fn index_remove(&mut self, id: u64, doc: &Document) {
+        for (field, index) in &mut self.indexes {
+            if let Some(value) = doc.get(field) {
+                index.remove(value, id);
+            }
         }
     }
 
@@ -863,6 +1092,121 @@ mod tests {
         let stats = db.stats();
         assert_eq!(stats.live_documents, 1);
         assert!(stats.file_bytes > HEADER_LEN);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn sorted(mut ids: Vec<DocId>) -> Vec<u64> {
+        ids.sort();
+        ids.into_iter().map(DocId::get).collect()
+    }
+
+    #[test]
+    fn test_create_index_then_find() {
+        let path = temp_path();
+        let mut db = Db::open(&path).unwrap();
+        let a = db.insert(doc(&[("g", 1)])).unwrap();
+        let b = db.insert(doc(&[("g", 2)])).unwrap();
+        let c = db.insert(doc(&[("g", 1)])).unwrap();
+
+        db.create_index("g").unwrap();
+        assert_eq!(
+            sorted(db.find("g", &Value::from(1_i64)).unwrap()),
+            sorted(vec![a, c])
+        );
+        assert_eq!(
+            sorted(db.find("g", &Value::from(2_i64)).unwrap()),
+            vec![b.get()]
+        );
+        assert!(db.find("g", &Value::from(9_i64)).unwrap().is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_find_indexed_matches_scan() {
+        let path = temp_path();
+        let mut db = Db::open(&path).unwrap();
+        for n in [1, 2, 2, 3, 2] {
+            db.insert(doc(&[("k", n)])).unwrap();
+        }
+        let scan = sorted(db.find("k", &Value::from(2_i64)).unwrap()); // no index yet
+        db.create_index("k").unwrap();
+        let indexed = sorted(db.find("k", &Value::from(2_i64)).unwrap());
+        assert_eq!(scan, indexed);
+        assert_eq!(scan.len(), 3);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_range_query_inclusive_and_exclusive() {
+        let path = temp_path();
+        let mut db = Db::open(&path).unwrap();
+        for n in [10, 20, 30, 40] {
+            db.insert(doc(&[("age", n)])).unwrap();
+        }
+        db.create_index("age").unwrap();
+        assert_eq!(
+            db.range("age", Value::from(20_i64)..=Value::from(30_i64))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            db.range("age", Value::from(20_i64)..Value::from(40_i64))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(db.range("age", Value::from(25_i64)..).unwrap().len(), 2);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_index_maintained_on_update_and_delete() {
+        let path = temp_path();
+        let mut db = Db::open(&path).unwrap();
+        let id = db.insert(doc(&[("status", 1)])).unwrap();
+        db.create_index("status").unwrap();
+        assert_eq!(db.find("status", &Value::from(1_i64)).unwrap(), vec![id]);
+
+        db.update(id, doc(&[("status", 2)])).unwrap();
+        assert!(db.find("status", &Value::from(1_i64)).unwrap().is_empty());
+        assert_eq!(db.find("status", &Value::from(2_i64)).unwrap(), vec![id]);
+
+        db.delete(id).unwrap();
+        assert!(db.find("status", &Value::from(2_i64)).unwrap().is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_indexes_listed_and_dropped() {
+        let path = temp_path();
+        let mut db = Db::open(&path).unwrap();
+        db.create_index("a").unwrap();
+        db.create_index("b").unwrap();
+        db.create_index("a").unwrap(); // idempotent
+        let mut names: Vec<&str> = db.indexes().collect();
+        names.sort_unstable();
+        assert_eq!(names, ["a", "b"]);
+        assert!(db.drop_index("a"));
+        assert!(!db.drop_index("a"));
+        assert_eq!(db.indexes().count(), 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_index_not_persisted_but_rebuildable_after_reopen() {
+        let path = temp_path();
+        let id;
+        {
+            let mut db = Db::open(&path).unwrap();
+            id = db.insert(doc(&[("city", 7)])).unwrap();
+            db.create_index("city").unwrap();
+            db.flush().unwrap();
+        }
+        let mut db = Db::open(&path).unwrap();
+        assert_eq!(db.indexes().count(), 0); // indexes are not on disk
+        db.create_index("city").unwrap(); // rebuild from the log
+        assert_eq!(db.find("city", &Value::from(7_i64)).unwrap(), vec![id]);
         let _ = std::fs::remove_file(&path);
     }
 }

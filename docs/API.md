@@ -16,7 +16,7 @@
 </div>
 <br>
 
-> Complete reference for every public item in `bison-db` as of `v0.2.0`, with runnable examples.
+> Complete reference for every public item in `bison-db` as of `v0.3.0`, with runnable examples.
 > The crate is pre-1.0: the surface grows across the 0.x series (see [`dev/ROADMAP.md`](../dev/ROADMAP.md)) and is frozen at `1.0.0`. Items marked _(planned)_ are not yet implemented.
 
 ## Table of Contents
@@ -27,6 +27,7 @@
 - [Error handling](#error-handling)
 - [Public APIs](#public-apis)
   - [`Db`](#db)
+  - [Secondary indexes and queries](#secondary-indexes-and-queries)
   - [`DocId`](#docid)
   - [`Stats`](#stats)
   - [`Document`](#document)
@@ -43,10 +44,10 @@
 
 ```toml
 [dependencies]
-bison-db = "0.2"
+bison-db = "0.3"
 
 # Enable serde for the document model:
-bison-db = { version = "0.2", features = ["serde"] }
+bison-db = { version = "0.3", features = ["serde"] }
 ```
 
 The default `std` feature provides the file-backed [`Db`]. Disabling it
@@ -347,6 +348,136 @@ fn main() -> bison_db::Result<()> {
 
     db.flush()?;
     assert_eq!(db.path(), path.as_path());
+    # let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+```
+
+<br>
+
+<a id="secondary-indexes-and-queries"></a>
+
+### Secondary indexes and queries
+
+`find` and `range` answer queries over document fields. They work whether or not
+a field is indexed: with an index they are a B-tree lookup, without one they fall
+back to scanning every live document. So an index never changes a result — only
+its speed. You may index **any number of fields**; call `create_index` once per
+field. Indexes live in memory and are rebuilt per session (they are not in the
+file), so re-declare them after reopening a store.
+
+Both query methods compare values with a single total order over [`Value`]
+(`null < bool < int < float < string < bytes < array < object`, then natural
+order within a variant, floats via `f64::total_cmp`). One consequence: integers
+and floats sort in separate bands, so index a numeric field with a consistent
+type.
+
+#### `Db::create_index`
+
+```rust,ignore
+pub fn create_index(&mut self, field: &str) -> Result<()>
+```
+
+Builds an ordered index over `field` by reading every live document once;
+documents without the field are skipped. The index is then maintained
+automatically on every insert, update, and delete. Idempotent — indexing an
+already-indexed field is a no-op.
+
+- **`field`** — the field name to index.
+
+**Errors:** [`Error::Io`] / [`Error::Corrupt`] if a document cannot be read while
+building the index.
+
+#### `Db::find`
+
+```rust,ignore
+pub fn find(&self, field: &str, value: &Value) -> Result<Vec<DocId>>
+```
+
+Returns the ids of all live documents whose `field` equals `value`.
+
+- **`field`** — the field to match on.
+- **`value`** — the exact value to match.
+
+**Errors:** [`Error::Io`] / [`Error::Corrupt`] on the unindexed (scan) path if a
+document cannot be read.
+
+```rust
+use bison_db::{Db, Document, Value};
+
+fn main() -> bison_db::Result<()> {
+    # let path = std::env::temp_dir().join("bison_db_api_find2.bison");
+    # let _ = std::fs::remove_file(&path);
+    let mut db = Db::open(&path)?;
+    db.insert({ let mut d = Document::new(); d.set("role", "admin"); d })?;
+    db.insert({ let mut d = Document::new(); d.set("role", "user"); d })?;
+
+    // Works before indexing (full scan)…
+    assert_eq!(db.find("role", &Value::from("admin"))?.len(), 1);
+    // …and faster after (point lookup), with the same result.
+    db.create_index("role")?;
+    assert_eq!(db.find("role", &Value::from("admin"))?.len(), 1);
+    # let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+```
+
+#### `Db::range`
+
+```rust,ignore
+pub fn range<R: RangeBounds<Value>>(&self, field: &str, range: R) -> Result<Vec<DocId>>
+```
+
+Returns the ids of all live documents whose `field` falls within `range`. Any
+[`RangeBounds`](https://doc.rust-lang.org/std/ops/trait.RangeBounds.html) form
+works: `a..b`, `a..=b`, `..b`, `a..`, `..`. When the field is indexed, matches
+come back ordered by field value (then id).
+
+- **`field`** — the field to range over.
+- **`range`** — inclusive/exclusive bounds as [`Value`]s.
+
+**Errors:** as `find`.
+
+```rust
+use bison_db::{Db, Document, Value};
+
+fn main() -> bison_db::Result<()> {
+    # let path = std::env::temp_dir().join("bison_db_api_range2.bison");
+    # let _ = std::fs::remove_file(&path);
+    let mut db = Db::open(&path)?;
+    for age in [17_i64, 25, 40, 70] {
+        db.insert({ let mut d = Document::new(); d.set("age", age); d })?;
+    }
+    db.create_index("age")?;
+
+    let working_age = db.range("age", Value::from(18_i64)..=Value::from(65_i64))?;
+    assert_eq!(working_age.len(), 2);            // 25 and 40
+    let over_60 = db.range("age", Value::from(60_i64)..)?;
+    assert_eq!(over_60.len(), 1);                // 70
+    # let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+```
+
+#### `Db::drop_index` and `Db::indexes`
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `drop_index` | `fn drop_index(&mut self, field: &str) -> bool` | Removes a field's index; `true` if one existed. |
+| `indexes` | `fn indexes(&self) -> impl Iterator<Item = &str>` | Names of the currently indexed fields (order unspecified). |
+
+```rust
+use bison_db::Db;
+
+fn main() -> bison_db::Result<()> {
+    # let path = std::env::temp_dir().join("bison_db_api_dropidx.bison");
+    # let _ = std::fs::remove_file(&path);
+    let mut db = Db::open(&path)?;
+    db.create_index("a")?;
+    db.create_index("b")?;
+    assert_eq!(db.indexes().count(), 2);
+    assert!(db.drop_index("a"));
+    assert!(!db.drop_index("a"));
     # let _ = std::fs::remove_file(&path);
     Ok(())
 }
@@ -661,12 +792,10 @@ scheduled for `v0.4.0`.
 These are **not yet implemented** and are listed so integrators can see the
 intended shape. Track them in [`dev/ROADMAP.md`](../dev/ROADMAP.md).
 
-- **Secondary indexes** _(planned, v0.3.0)_ — declare up to several indexed
-  fields per document for fast lookups beyond the primary id.
-- **Field and range queries** _(planned, v0.3.0)_ — fetch documents by a field
-  predicate or by a range over an indexed field.
 - **Write-ahead log** _(planned, v0.4.0)_ — group-commit durability and a frozen
   on-disk format.
+- **Persistent / lazily-rebuilt indexes** _(planned, v0.4.0+)_ — avoid
+  re-declaring indexes after reopening a store.
 - **Compaction** _(planned, v0.5.0)_ — reclaim space held by superseded and
   deleted records.
 

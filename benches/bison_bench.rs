@@ -83,5 +83,48 @@ fn bench_update(c: &mut Criterion) {
     let _ = std::fs::remove_file(&path);
 }
 
-criterion_group!(benches, bench_insert, bench_get, bench_update);
+/// Point lookup through a secondary index versus the full-scan fallback, over
+/// the same 10k-document store. Shows what the index buys.
+fn bench_find(c: &mut Criterion) {
+    const N: i64 = 10_000;
+    let path = temp_path("find");
+    let mut db = Db::open(&path).expect("open");
+    for i in 0..N {
+        let mut d = Document::new();
+        d.set("key", i);
+        db.insert(d).expect("insert");
+    }
+
+    let mut group = c.benchmark_group("find_one_of_10k");
+
+    // Unindexed: scans all 10k documents.
+    let mut needle = 0_i64;
+    group.bench_function("scan", |b| {
+        b.iter(|| {
+            let hits = db
+                .find("key", &Value::from(black_box(needle % N)))
+                .expect("find");
+            needle += 1;
+            black_box(hits);
+        });
+    });
+
+    // Indexed: a B-tree point lookup.
+    db.create_index("key").expect("create_index");
+    let mut needle = 0_i64;
+    group.bench_function("indexed", |b| {
+        b.iter(|| {
+            let hits = db
+                .find("key", &Value::from(black_box(needle % N)))
+                .expect("find");
+            needle += 1;
+            black_box(hits);
+        });
+    });
+
+    group.finish();
+    let _ = std::fs::remove_file(&path);
+}
+
+criterion_group!(benches, bench_insert, bench_get, bench_update, bench_find);
 criterion_main!(benches);

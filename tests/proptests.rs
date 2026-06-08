@@ -109,4 +109,44 @@ proptest! {
         }
         let _ = std::fs::remove_file(&path);
     }
+
+    /// An indexed query returns the same set of ids as the equivalent full scan,
+    /// for both equality and range queries.
+    #[test]
+    fn prop_indexed_query_matches_scan(
+        values in proptest::collection::vec(-20_i64..20, 1..40),
+        needle in -20_i64..20,
+        lo in -20_i64..20,
+        hi in -20_i64..20,
+    ) {
+        let path = temp_path();
+        let mut db = Db::open(&path).unwrap();
+        for v in &values {
+            let mut d = Document::new();
+            d.set("k", *v);
+            db.insert(d).unwrap();
+        }
+
+        // Scan results (no index declared yet).
+        let scan_eq = sorted_ids(db.find("k", &Value::from(needle)).unwrap());
+        let (low, high) = (lo.min(hi), lo.max(hi));
+        let scan_range =
+            sorted_ids(db.range("k", Value::from(low)..=Value::from(high)).unwrap());
+
+        // Indexed results.
+        db.create_index("k").unwrap();
+        let idx_eq = sorted_ids(db.find("k", &Value::from(needle)).unwrap());
+        let idx_range =
+            sorted_ids(db.range("k", Value::from(low)..=Value::from(high)).unwrap());
+
+        prop_assert_eq!(scan_eq, idx_eq);
+        prop_assert_eq!(scan_range, idx_range);
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// Sorts document ids by their raw value for order-independent comparison.
+fn sorted_ids(mut ids: Vec<bison_db::DocId>) -> Vec<u64> {
+    ids.sort();
+    ids.into_iter().map(|id| id.get()).collect()
 }

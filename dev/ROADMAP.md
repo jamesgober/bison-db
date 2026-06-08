@@ -28,10 +28,16 @@ Exit criteria:
 
 ---
 
-## v0.3.0 -- secondary indexes + field and range queries
+## v0.3.0 -- secondary indexes + field and range queries (DONE)
+
+Ordered secondary indexes over document fields (any number per store), with
+equality (`find`) and range (`range`) queries. Both queries also work without an
+index via a full scan, so the index is a pure speedup. Indexes are in-memory and
+rebuilt per session (`create_index`), keeping the on-disk format unfrozen.
 
 Exit criteria:
-- [ ] New surface tested; hot paths benchmarked.
+- [x] New surface tested (index/scan parity property-tested); hot paths
+  benchmarked (indexed point lookup vs full scan).
 
 ---
 
