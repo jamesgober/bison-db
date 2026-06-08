@@ -56,11 +56,10 @@ categories = [
     "data-structures"
 ]
 
-\# Metadata for docs.rs
+# Metadata for docs.rs
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
-
 
 
 
