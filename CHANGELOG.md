@@ -10,6 +10,30 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-08
+
+Space-reclaiming compaction, a defined concurrency model, and the **public API
+freeze**. From here, changes are additive only until 1.0.
+
+### Added
+
+- `Db::compact`: rewrites the file with one record per live document, reclaiming
+  the space left by overwrites and deletes. The compacted copy is built in a
+  sibling temporary file and swapped in with an atomic rename, so a crash leaves
+  either the original or the fully compacted file — never a partial result.
+  Document ids and secondary indexes are preserved. Verified on Windows and Linux.
+- Interrupted-compaction recovery: a leftover `.compacting` temporary is removed
+  on `open`.
+- Compile-time `Db: Send + Sync` assertion, a concurrency integration test using
+  `Arc<RwLock<Db>>`, and a `compaction` example.
+
+### Changed
+
+- **Public API frozen** (recorded in `dev/ROADMAP.md`): additive-only changes
+  until 1.0, no breaking change before then.
+- Documented the single-writer, multi-reader concurrency model across the crate
+  docs, README, and `docs/API.md`.
+
 ## [0.4.0] - 2026-06-08
 
 Durability you can tune, recovery hardening, and a frozen on-disk format. The
@@ -119,7 +143,8 @@ Initial scaffold and repository bootstrap. No domain logic yet &mdash; this rele
 - `.github/workflows/ci.yml` (Node 24 actions; fmt, clippy, test, doc, audit, deny) and `.github/FUNDING.yml`.
 
 <!-- LINKS -->
-[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jamesgober/bison-db/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jamesgober/bison-db/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jamesgober/bison-db/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jamesgober/bison-db/compare/v0.1.0...v0.2.0

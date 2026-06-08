@@ -55,10 +55,34 @@ Exit criteria:
 
 ---
 
-## v0.5.0 -- concurrency + compaction + API freeze
+## v0.5.0 -- concurrency + compaction + API freeze (DONE)
+
+`Db::compact` reclaims the space left by overwrites and deletes via a crash-safe
+temp-file-plus-atomic-rename swap (verified on Windows and Linux). Concurrency
+follows a single-writer, multi-reader model: `Db` is `Send + Sync` (asserted at
+compile time) and shares across threads behind `Arc<RwLock<Db>>` — many readers
+or one writer, enforced by `&self`/`&mut self`. A single append-only file has one
+tail, so single-writer is inherent and intended, as in an embedded SQL engine.
+
+### Frozen public API (as of v0.5.0)
+
+The surface below is **stable**: additive changes only until 1.0, and no breaking
+change before then. The authoritative item-level reference is `docs/API.md`.
+
+- Types: `Db`, `DbOptions`, `SyncPolicy`, `DocId`, `Stats`, `Document`, `Value`,
+  `Error`, `Result`, and the constant `MAX_RECORD_BYTES`.
+- `Db`: `open`, `open_with`, `insert`, `get`, `update`, `delete`, `contains`,
+  `len`, `is_empty`, `ids`, `flush`, `compact`, `path`, `stats`, `sync_policy`,
+  `create_index`, `drop_index`, `indexes`, `find`, `range`.
+- `DbOptions`: `new`, `sync`, `build_sync_policy`, `open`.
+- `Document`: `new`, `with_capacity`, `set`, `get`, `get_mut`, `contains_key`,
+  `remove`, `len`, `is_empty`, `clear`, `iter`, `keys`, `values`, plus
+  `FromIterator`/`IntoIterator`.
+- `Value`: variants and accessors (`is_null`, `as_*`, `type_name`) plus the
+  `From` conversions.
 
 Exit criteria:
-- [ ] Public API frozen (recorded here). `cargo audit` + `cargo deny` clean.
+- [x] Public API frozen (recorded here). `cargo audit` + `cargo deny` clean.
 
 ---
 

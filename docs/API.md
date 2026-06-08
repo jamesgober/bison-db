@@ -16,7 +16,7 @@
 </div>
 <br>
 
-> Complete reference for every public item in `bison-db` as of `v0.4.0`, with runnable examples.
+> Complete reference for every public item in `bison-db` as of `v0.5.0`, with runnable examples.
 > The crate is pre-1.0: the surface grows across the 0.x series (see [`dev/ROADMAP.md`](../dev/ROADMAP.md)) and is frozen at `1.0.0`. Items marked _(planned)_ are not yet implemented.
 
 ## Table of Contents
@@ -35,6 +35,7 @@
   - [`Value`](#value)
   - [`Error` and `Result`](#error)
   - [`MAX_RECORD_BYTES`](#max-record-bytes)
+- [Concurrency](#concurrency)
 - [Durability and recovery](#durability-and-recovery)
 - [Feature flags](#feature-flags)
 - [Roadmap surface](#roadmap-surface)
@@ -45,10 +46,10 @@
 
 ```toml
 [dependencies]
-bison-db = "0.4"
+bison-db = "0.5"
 
 # Enable serde for the document model:
-bison-db = { version = "0.4", features = ["serde"] }
+bison-db = { version = "0.5", features = ["serde"] }
 ```
 
 The default `std` feature provides the file-backed [`Db`]. Disabling it
@@ -330,6 +331,50 @@ fn main() -> bison_db::Result<()> {
 | `stats` | `fn stats(&self) -> Stats` | A [`Stats`](#stats) snapshot of size and live contents. |
 | `open_with` | `fn open_with<P>(path: P, options: DbOptions) -> Result<Db>` | Open with a [`DbOptions`](#dboptions) configuration (e.g. a durability policy). |
 | `sync_policy` | `fn sync_policy(&self) -> SyncPolicy` | The store's current [`SyncPolicy`](#dboptions). |
+| `compact` | `fn compact(&mut self) -> Result<()>` | Rewrite the file with one record per live document, reclaiming space; see below. |
+
+#### `Db::compact`
+
+```rust,ignore
+pub fn compact(&mut self) -> Result<()>
+```
+
+Rewrites the file to hold only live documents, reclaiming the space left by
+overwrites and deletes. The store is append-only, so every update and delete
+leaves a dead record behind; over time the file grows past the size of its live
+data.
+
+The compacted copy is built in a sibling temporary file, `fsync`ed, and swapped
+in with an **atomic rename**, so a crash at any point leaves either the original
+file or the fully compacted one — never a partial result. A leftover temporary
+from an interrupted compaction is removed on the next [`open`](#dbopen). Document
+ids are preserved, so existing [`DocId`]s and secondary indexes stay valid; only
+the on-disk layout changes.
+
+**Errors:** [`Error::Io`] if the temporary cannot be written or swapped in;
+[`Error::Corrupt`] if a live record cannot be read back.
+
+```rust
+use bison_db::{Db, Document};
+
+fn main() -> bison_db::Result<()> {
+    # let path = std::env::temp_dir().join("bison_db_api_compact.bison");
+    # let _ = std::fs::remove_file(&path);
+    let mut db = Db::open(&path)?;
+    let id = db.insert({ let mut d = Document::new(); d.set("v", 1_i64); d })?;
+    for n in 2..1_000 {
+        db.update(id, { let mut d = Document::new(); d.set("v", n); d })?;
+    }
+    let before = db.stats().file_bytes;
+
+    db.compact()?;                       // 999 dead versions collapse to one record
+
+    assert!(db.stats().file_bytes < before);
+    assert_eq!(db.get(id)?.unwrap().get("v").and_then(|v| v.as_int()), Some(999));
+    # let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+```
 
 ```rust
 use bison_db::{Db, Document};
@@ -818,6 +863,45 @@ assert_eq!(bison_db::MAX_RECORD_BYTES, 64 * 1024 * 1024);
 
 ---
 
+## Concurrency
+
+`Db` follows a **single-writer, multi-reader** model, like an embedded SQL
+engine. Reads ([`get`](#dbget), [`find`](#dbfind), [`range`](#dbrange),
+`contains`, `len`, …) take `&self`; writes ([`insert`](#dbinsert),
+[`update`](#dbupdate), [`delete`](#dbdelete), `compact`, …) take `&mut self`. The
+compiler therefore guarantees writes are exclusive.
+
+`Db` is [`Send`] and [`Sync`], so share one across threads with an
+[`Arc`]`<`[`RwLock`]`<Db>>`: many threads read concurrently, a writer takes the
+lock exclusively. The single-writer design is inherent to one append-only file —
+there is a single tail — and is the right fit for an embedded store.
+
+```rust
+use std::sync::{Arc, RwLock};
+use bison_db::{Db, Document};
+
+fn main() -> bison_db::Result<()> {
+    # let path = std::env::temp_dir().join("bison_db_api_concurrency.bison");
+    # let _ = std::fs::remove_file(&path);
+    let db = Arc::new(RwLock::new(Db::open(&path)?));
+
+    db.write().unwrap().insert({ let mut d = Document::new(); d.set("k", 1_i64); d })?;
+
+    let reader = Arc::clone(&db);
+    let handle = std::thread::spawn(move || reader.read().unwrap().len());
+    assert_eq!(handle.join().unwrap(), 1);
+    # let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+```
+
+[`Send`]: https://doc.rust-lang.org/std/marker/trait.Send.html
+[`Sync`]: https://doc.rust-lang.org/std/marker/trait.Sync.html
+[`Arc`]: https://doc.rust-lang.org/std/sync/struct.Arc.html
+[`RwLock`]: https://doc.rust-lang.org/std/sync/struct.RwLock.html
+
+---
+
 ## Durability and recovery
 
 - **Visibility.** A write is visible to later reads in the same process as soon
@@ -850,16 +934,16 @@ assert_eq!(bison_db::MAX_RECORD_BYTES, 64 * 1024 * 1024);
 
 ## Roadmap surface
 
-These are **not yet implemented** and are listed so integrators can see the
-intended shape. Track them in [`dev/ROADMAP.md`](../dev/ROADMAP.md).
+The public API is **frozen** as of v0.5.0: additive changes only until 1.0, no
+breaking change before then. The items below are **not yet implemented** and are
+listed so integrators can see the intended direction; tracked in
+[`dev/ROADMAP.md`](../dev/ROADMAP.md).
 
-- **Concurrency** _(planned, v0.5.0)_ — safe shared-access patterns for
-  multi-threaded workloads.
-- **Compaction** _(planned, v0.5.0)_ — reclaim space held by superseded and
-  deleted records.
-- **Persistent / lazily-rebuilt indexes** _(planned, post-1.0)_ — avoid
-  re-declaring indexes after reopening a store, via a sidecar file that does not
-  change the frozen main format.
+- **Hardening toward 1.0** _(v0.6.0 → 1.0)_ — real-consumer integration, broader
+  testing, and final benchmarks.
+- **Persistent / lazily-rebuilt indexes** _(post-1.0)_ — avoid re-declaring
+  indexes after reopening a store, via a sidecar file that does not change the
+  frozen main format.
 
 ---
 

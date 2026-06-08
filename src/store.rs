@@ -302,10 +302,19 @@ impl DbOptions {
 ///
 /// Open one with [`Db::open`], then [`insert`](Db::insert),
 /// [`get`](Db::get), [`update`](Db::update), and [`delete`](Db::delete)
-/// documents by id. Reads take `&self` and writes take `&mut self`, so the
-/// compiler enforces single-writer access; share a `Db` across threads by
-/// placing it behind your own lock. Call [`flush`](Db::flush) to make recent
-/// writes durable.
+/// documents by id. Call [`flush`](Db::flush) to make recent writes durable, and
+/// [`compact`](Db::compact) to reclaim space left by overwrites and deletes.
+///
+/// # Concurrency
+///
+/// `Db` follows a single-writer, multi-reader model, like an embedded SQL
+/// engine: reads ([`get`](Db::get), [`find`](Db::find), [`range`](Db::range))
+/// take `&self`, while writes take `&mut self`. The compiler therefore enforces
+/// that writes are exclusive. `Db` is [`Send`] and [`Sync`], so the idiomatic
+/// way to share one across threads is an [`Arc`](std::sync::Arc)`<`[`RwLock`](std::sync::RwLock)`<Db>>`:
+/// many threads can read concurrently, and a writer takes the lock exclusively.
+/// The single-writer design is inherent to a single append-only file — there is
+/// one tail — and is the right fit for an embedded store.
 ///
 /// # Examples
 ///
@@ -417,6 +426,10 @@ impl Db {
 
     /// The shared open path used by [`Db::open`] and [`DbOptions::open`].
     fn open_inner(path: PathBuf, sync: SyncPolicy) -> Result<Self> {
+        // Remove any temporary file left behind by an interrupted compaction;
+        // the original store file is the authoritative copy.
+        let _ = std::fs::remove_file(compacting_path(&path));
+
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -772,6 +785,110 @@ impl Db {
         }
     }
 
+    /// Rewrites the file to contain only live documents, reclaiming the space
+    /// held by superseded and deleted records.
+    ///
+    /// Every overwrite and delete leaves dead bytes behind in the append-only
+    /// log; over time the file grows past the size of its live data. Compaction
+    /// writes a fresh copy containing one current record per live document, then
+    /// atomically swaps it in. Document ids are preserved, so existing
+    /// [`DocId`]s and secondary indexes remain valid; only the on-disk layout
+    /// changes.
+    ///
+    /// The compacted copy is built in a sibling temporary file and put in place
+    /// with an atomic rename, so a crash at any point leaves either the original
+    /// file or the fully compacted one — never a partial result. A leftover
+    /// temporary from an interrupted compaction is cleaned up on the next
+    /// [`open`](Db::open).
+    ///
+    /// Compaction is durable on return regardless of [`SyncPolicy`]: the new file
+    /// is `fsync`ed before the swap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if the temporary file cannot be written or swapped
+    /// in, or [`Error::Corrupt`] if a live record cannot be read back.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> bison_db::Result<()> {
+    /// # let path = std::env::temp_dir().join("bison_db_compact_example.bison");
+    /// # let _ = std::fs::remove_file(&path);
+    /// use bison_db::{Db, Document};
+    /// let mut db = Db::open(&path)?;
+    /// let id = db.insert({ let mut d = Document::new(); d.set("v", 1_i64); d })?;
+    /// for n in 2..1000 {
+    ///     db.update(id, { let mut d = Document::new(); d.set("v", n); d })?;
+    /// }
+    /// let before = db.stats().file_bytes;
+    ///
+    /// db.compact()?; // collapse 999 versions down to one live record
+    ///
+    /// assert!(db.stats().file_bytes < before);
+    /// assert_eq!(db.get(id)?.unwrap().get("v").and_then(|v| v.as_int()), Some(999));
+    /// # let _ = std::fs::remove_file(&path);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn compact(&mut self) -> Result<()> {
+        let temp_path = compacting_path(&self.path);
+        let _ = std::fs::remove_file(&temp_path);
+
+        let temp = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        write_header_to(&temp)?;
+
+        let mut new_index = HashMap::with_capacity(self.index.len());
+        let mut tail = HEADER_LEN;
+        let mut body = Vec::new();
+        let mut frame = Vec::new();
+
+        for (&id, &loc) in &self.index {
+            body.resize(loc.len as usize, 0);
+            read_exact_at(&self.file, &mut body, loc.offset)?;
+
+            frame.clear();
+            frame.extend_from_slice(&[0u8; FRAME_LEN]);
+            frame.push(OP_PUT);
+            frame.extend_from_slice(&id.to_le_bytes());
+            frame.extend_from_slice(&body);
+            let payload_len = frame.len() - FRAME_LEN;
+            let crc = crc32c(&frame[FRAME_LEN..]);
+            frame[0..4].copy_from_slice(&(payload_len as u32).to_le_bytes());
+            frame[4..8].copy_from_slice(&crc.to_le_bytes());
+
+            write_all_at(&temp, &frame, tail)?;
+            let offset = tail + FRAME_LEN as u64 + MIN_PAYLOAD as u64;
+            let _ = new_index.insert(
+                id,
+                BodyLoc {
+                    offset,
+                    len: loc.len,
+                },
+            );
+            tail += (FRAME_LEN + payload_len) as u64;
+        }
+
+        temp.sync_all()?;
+        drop(temp);
+
+        // Re-point our handle at the temporary file, which closes the original
+        // file so the rename can replace it on every platform. The temporary is
+        // open with share-delete, so renaming it while open is permitted.
+        self.file = OpenOptions::new().read(true).write(true).open(&temp_path)?;
+        std::fs::rename(&temp_path, &self.path)?;
+        self.file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        sync_parent_dir(&self.path)?;
+
+        self.index = new_index;
+        self.tail = tail;
+        Ok(())
+    }
+
     /// Builds a secondary index over `field`, making [`find`](Db::find) and
     /// [`range`](Db::range) on that field fast point and range lookups instead of
     /// full scans.
@@ -1037,10 +1154,7 @@ impl Db {
     /// Writes the 16-byte file header at offset 0 and syncs it, establishing a
     /// valid empty store.
     fn write_header(&mut self) -> Result<()> {
-        let mut header = [0u8; HEADER_LEN as usize];
-        header[0..8].copy_from_slice(&HEADER_MAGIC);
-        header[8..10].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
-        write_all_at(&self.file, &header, 0)?;
+        write_header_to(&self.file)?;
         self.file.sync_all()?;
         Ok(())
     }
@@ -1139,6 +1253,14 @@ impl fmt::Debug for Db {
     }
 }
 
+/// Compile-time proof that [`Db`] is `Send + Sync`, so it can be shared across
+/// threads behind a lock as the concurrency docs describe. If a future field
+/// broke this, the crate would fail to compile here rather than silently.
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Db>();
+};
+
 impl Drop for Db {
     /// Makes a best-effort `fsync` on a clean shutdown under
     /// [`SyncPolicy::Manual`], so a normal program exit does not lose writes that
@@ -1151,6 +1273,23 @@ impl Drop for Db {
             let _ = self.file.sync_all();
         }
     }
+}
+
+/// Writes the 16-byte file header at offset 0 of `file` (without syncing).
+fn write_header_to(file: &File) -> Result<()> {
+    let mut header = [0u8; HEADER_LEN as usize];
+    header[0..8].copy_from_slice(&HEADER_MAGIC);
+    header[8..10].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+    write_all_at(file, &header, 0)?;
+    Ok(())
+}
+
+/// The sibling path a compaction writes its temporary file to: the store's path
+/// with a `.compacting` suffix. A leftover one is removed on [`Db::open`].
+fn compacting_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".compacting");
+    PathBuf::from(name)
 }
 
 /// Forces the directory containing `path` to disk, so the file's creation is
@@ -1490,6 +1629,122 @@ mod tests {
         let path = temp_path();
         let db = DbOptions::new().open(&path).unwrap();
         assert_eq!(db.sync_policy(), SyncPolicy::Manual);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_compact_reclaims_space_and_preserves_data() {
+        let path = temp_path();
+        let mut db = Db::open(&path).unwrap();
+        let id = db.insert(doc(&[("v", 1)])).unwrap();
+        for n in 2..500 {
+            db.update(id, doc(&[("v", n)])).unwrap();
+        }
+        let before = db.stats().file_bytes;
+
+        db.compact().unwrap();
+
+        let after = db.stats().file_bytes;
+        assert!(
+            after < before,
+            "compaction should shrink the file: {after} !< {before}"
+        );
+        assert_eq!(db.len(), 1);
+        assert_eq!(
+            db.get(id)
+                .unwrap()
+                .unwrap()
+                .get("v")
+                .and_then(Value::as_int),
+            Some(499)
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_compact_drops_deleted_records() {
+        let path = temp_path();
+        let mut db = Db::open(&path).unwrap();
+        let keep = db.insert(doc(&[("k", 1)])).unwrap();
+        let gone = db.insert(doc(&[("k", 2)])).unwrap();
+        db.delete(gone).unwrap();
+
+        db.compact().unwrap();
+
+        assert_eq!(db.len(), 1);
+        assert!(db.get(keep).unwrap().is_some());
+        assert!(db.get(gone).unwrap().is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_compact_preserves_ids_and_indexes() {
+        let path = temp_path();
+        let mut db = Db::open(&path).unwrap();
+        let a = db.insert(doc(&[("city", 1)])).unwrap();
+        let b = db.insert(doc(&[("city", 2)])).unwrap();
+        db.create_index("city").unwrap();
+
+        db.compact().unwrap();
+
+        // Ids are unchanged and the secondary index still resolves them.
+        assert_eq!(db.find("city", &Value::from(1_i64)).unwrap(), vec![a]);
+        assert_eq!(db.find("city", &Value::from(2_i64)).unwrap(), vec![b]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_compact_then_reopen_recovers() {
+        let path = temp_path();
+        let id;
+        {
+            let mut db = Db::open(&path).unwrap();
+            id = db.insert(doc(&[("v", 7)])).unwrap();
+            db.update(id, doc(&[("v", 8)])).unwrap();
+            db.compact().unwrap();
+            db.flush().unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.len(), 1);
+        assert_eq!(
+            db.get(id)
+                .unwrap()
+                .unwrap()
+                .get("v")
+                .and_then(Value::as_int),
+            Some(8)
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_compact_empty_db_is_ok() {
+        let path = temp_path();
+        let mut db = Db::open(&path).unwrap();
+        db.compact().unwrap();
+        assert!(db.is_empty());
+        // Still writable afterwards.
+        let id = db.insert(doc(&[("x", 1)])).unwrap();
+        assert!(db.get(id).unwrap().is_some());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_open_removes_stale_compacting_temp() {
+        let path = temp_path();
+        {
+            let mut db = Db::open(&path).unwrap();
+            db.insert(doc(&[("v", 1)])).unwrap();
+            db.flush().unwrap();
+        }
+        // Simulate a compaction that died before swapping in its temp file.
+        let stale = compacting_path(&path);
+        std::fs::write(&stale, b"garbage from an interrupted compaction").unwrap();
+        assert!(stale.exists());
+
+        let db = Db::open(&path).unwrap();
+        assert!(!stale.exists(), "open should remove the stale temp");
+        assert_eq!(db.len(), 1);
         let _ = std::fs::remove_file(&path);
     }
 }

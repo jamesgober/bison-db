@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). Schemaless documents. Single-file storage. Crash-safe, embedded, zero-network.
     </p>
     <blockquote>
-        <strong>Status: pre-1.0, in active development.</strong> As of <code>v0.4.0</code> the document model, the single-file store, secondary indexes with field and range queries, and a configurable durability policy are all implemented, and the <a href="./docs/FORMAT.md">on-disk format is frozen</a> (version 1). The remaining 0.x work is hardening and benchmarking toward a stable <code>1.0.0</code>, per <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>. The public API is frozen at <code>1.0.0</code>.
+        <strong>Status: pre-1.0, API frozen.</strong> As of <code>v0.5.0</code> the document model, the single-file store, secondary indexes with field and range queries, a configurable durability policy, and space-reclaiming compaction are all implemented; the <a href="./docs/FORMAT.md">on-disk format is frozen</a> (version 1) and the <a href="./dev/ROADMAP.md">public API is frozen</a> (additive-only until 1.0). The remaining 0.x work is hardening and benchmarking toward a stable <code>1.0.0</code>.
     </blockquote>
 </div>
 
@@ -44,6 +44,8 @@ Available now (`v0.4.0`):
 - **Single-file storage** &mdash; the whole database is one file: trivial to ship, copy, and back up
 - **Crash-safe writes** &mdash; every record is length-framed and CRC-32C checked; a write torn by a crash is detected and dropped on the next open, never silently misread
 - **Configurable durability** &mdash; `fsync` on every write, or batch and sync on `flush`; either way the file is never left corrupt
+- **Compaction** &mdash; `compact` reclaims the space left by overwrites and deletes via a crash-safe atomic file swap
+- **Concurrency** &mdash; single-writer, multi-reader; `Db` is `Send + Sync`, so share it across threads behind an `Arc<RwLock<Db>>`
 - **Frozen on-disk format** &mdash; the [format](./docs/FORMAT.md) is stable (version 1); files written by 0.2.0 onward stay readable
 - **Embedded, zero-network** &mdash; runs in-process; no server, no daemon, no external services
 - **Point operations** &mdash; `insert`, `get`, `update`, and `delete` documents by id, plus `flush` for durability
@@ -51,10 +53,10 @@ Available now (`v0.4.0`):
 - **Field and range queries** &mdash; `find` by an exact field value, `range` over an ordered field
 - **Optional `serde`** &mdash; move documents in and out of JSON, MessagePack, or any serde format
 
-On the roadmap (`v0.5.0`+, see [`dev/ROADMAP.md`](./dev/ROADMAP.md)):
+On the roadmap (`v0.6.0` &rarr; `1.0.0`, see [`dev/ROADMAP.md`](./dev/ROADMAP.md)):
 
-- **Concurrency** &mdash; safe shared access patterns for multi-threaded workloads
-- **Compaction** &mdash; reclaim space held by superseded and deleted records
+- **Hardening and real-consumer integration** toward a stable 1.0
+- **Final benchmarks** and a populated head-to-head comparison
 
 <br>
 <hr>
@@ -64,10 +66,10 @@ On the roadmap (`v0.5.0`+, see [`dev/ROADMAP.md`](./dev/ROADMAP.md)):
 
 ```toml
 [dependencies]
-bison-db = "0.4"
+bison-db = "0.5"
 
 # With serde support for the document model:
-bison-db = { version = "0.4", features = ["serde"] }
+bison-db = { version = "0.5", features = ["serde"] }
 ```
 
 <br>
@@ -98,12 +100,13 @@ fn main() -> bison_db::Result<()> {
 }
 ```
 
-More runnable programs live in [`examples/`](./examples): `quick_start`, `user_profiles` (CRUD with nested documents), `secondary_indexes`, `durability`, `crash_recovery`, and `json_interop`.
+More runnable programs live in [`examples/`](./examples): `quick_start`, `user_profiles` (CRUD with nested documents), `secondary_indexes`, `durability`, `compaction`, `crash_recovery`, and `json_interop`.
 
 ```bash
 cargo run --example user_profiles
 cargo run --example secondary_indexes
 cargo run --example durability
+cargo run --example compaction
 cargo run --example crash_recovery
 cargo run --example json_interop --features serde
 ```
@@ -171,11 +174,59 @@ format](./docs/FORMAT.md) is frozen and versioned. See [`docs/FORMAT.md`](./docs
 
 <br>
 
+## Reclaiming space
+
+The store is append-only, so overwrites and deletes leave dead records behind.
+`compact` rewrites the file with one record per live document and swaps it in
+atomically. Document ids and secondary indexes are preserved.
+
+```rust
+# fn main() -> bison_db::Result<()> {
+# let mut db = bison_db::Db::open(std::env::temp_dir().join("readme_compact.bison"))?;
+let before = db.stats().file_bytes;
+db.compact()?;
+let after = db.stats().file_bytes; // smaller, with the same live data
+# assert!(after <= before);
+# Ok(())
+# }
+```
+
+<br>
+
+## Concurrency
+
+`Db` follows a single-writer, multi-reader model, like an embedded SQL engine:
+reads take `&self`, writes take `&mut self`. `Db` is `Send + Sync`, so the
+idiomatic way to share one across threads is an `Arc<RwLock<Db>>` — many readers
+concurrently, or one exclusive writer.
+
+```rust
+use std::sync::{Arc, RwLock};
+use bison_db::{Db, Document};
+
+# fn main() -> bison_db::Result<()> {
+let db = Arc::new(RwLock::new(Db::open("shared.bison")?));
+
+// Writer:
+db.write().unwrap().insert({ let mut d = Document::new(); d.set("k", 1_i64); d })?;
+
+// Reader on another thread:
+let snapshot = Arc::clone(&db);
+std::thread::spawn(move || {
+    let guard = snapshot.read().unwrap();
+    let _ = guard.len();
+});
+# Ok(())
+# }
+```
+
+<br>
+
 ## API Overview
 
 For the complete reference, see [`docs/API.md`](./docs/API.md).
 
-- [`Db`](./docs/API.md#db) / [`DbOptions`](./docs/API.md#dboptions) &mdash; open the store (with a durability policy); `insert` / `get` / `update` / `delete` / `flush`; `create_index` / `find` / `range`
+- [`Db`](./docs/API.md#db) / [`DbOptions`](./docs/API.md#dboptions) &mdash; open the store (with a durability policy); `insert` / `get` / `update` / `delete` / `flush` / `compact`; `create_index` / `find` / `range`
 - [`Document`](./docs/API.md#document) &mdash; the ordered, schemaless record you store
 - [`Value`](./docs/API.md#value) &mdash; a field's content: null, bool, int, float, string, bytes, array, or nested document
 - [`DocId`](./docs/API.md#docid) &mdash; a document's stable primary key
