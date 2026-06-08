@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). Schemaless documents. Single-file storage. Crash-safe, embedded, zero-network.
     </p>
     <blockquote>
-        <strong>Status: pre-1.0 (beta), API frozen.</strong> As of <code>v0.7.0</code> the document model, the single-file store, secondary indexes with field and range queries, a configurable durability policy, and space-reclaiming compaction are all implemented and hardened with fuzz-tested parse/recovery paths and a randomized soak test; the <a href="./docs/FORMAT.md">on-disk format is frozen</a> (version 1) and the <a href="./dev/ROADMAP.md">public API is frozen</a> (additive-only until 1.0). The remaining work is a controlled head-to-head benchmark and a final soak toward a stable <code>1.0.0</code>.
+        <strong>Status: pre-1.0 (release candidate), API frozen.</strong> As of <code>v0.8.0</code> the document model, the single-file store, secondary indexes with field and range queries, a configurable durability policy, and space-reclaiming compaction are all implemented, hardened with fuzz-tested parse/recovery paths and a randomized soak test, and <a href="./docs/PERFORMANCE.md">benchmarked head-to-head</a> against a peer engine; the <a href="./docs/FORMAT.md">on-disk format is frozen</a> (version 1) and the <a href="./dev/ROADMAP.md">public API is frozen</a> (additive-only until 1.0). What remains before <code>1.0.0</code> is a final soak.
     </blockquote>
 </div>
 
@@ -66,10 +66,10 @@ On the roadmap (`v0.6.0` &rarr; `1.0.0`, see [`dev/ROADMAP.md`](./dev/ROADMAP.md
 
 ```toml
 [dependencies]
-bison-db = "0.7"
+bison-db = "0.8"
 
 # With serde support for the document model:
-bison-db = { version = "0.7", features = ["serde"] }
+bison-db = { version = "0.8", features = ["serde"] }
 ```
 
 <br>
@@ -246,7 +246,9 @@ For the complete reference, see [`docs/API.md`](./docs/API.md).
 | `find` by indexed field (in a 10k-doc store) | ~65 ns |
 | `find` by full scan (in a 10k-doc store) | ~1.8 ms |
 
-The last two rows are the same query with and without an index — the index turns a full scan into a B-tree point lookup (~27,000× here). Numbers are produced by [`benches/bison_bench.rs`](./benches/bison_bench.rs) against a real on-disk store; reproduce them with `cargo bench`. See [`docs/PERFORMANCE.md`](./docs/PERFORMANCE.md) for the full method, environment, and the durability cost. A populated head-to-head comparison against other embedded and document stores is planned for the 1.0 cycle.
+The last two rows are the same query with and without an index — the index turns a full scan into a B-tree point lookup (~27,000× here). Numbers are produced by [`benches/bison_bench.rs`](./benches/bison_bench.rs) against a real on-disk store; reproduce them with `cargo bench`.
+
+In a controlled head-to-head against [`redb`](https://github.com/cberner/redb) (a pure-Rust ACID embedded engine), bison-db is **~1.85× faster on bulk inserts** and **~35% smaller on disk**, while redb is **~1.3× faster on point reads** — an honest split, with bison-db carrying a richer document model on top. See [`docs/PERFORMANCE.md`](./docs/PERFORMANCE.md) for the full method, environment, durability cost, and the reproducible harness in [`benchmarks/`](./benchmarks).
 
 <br>
 <hr>

@@ -4,6 +4,7 @@
 
 # Rust / Cargo
 /target/
+/benchmarks/target/
 **/*.rs.bk
 
 # Editor & OS junk

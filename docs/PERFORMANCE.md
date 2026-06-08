@@ -100,13 +100,46 @@ architecture:
 - **Ordered indexes for ranges.** Secondary indexes are B-trees keyed by a total
   order over `Value`, so a range query is a contiguous, already-sorted walk.
 
-## How it compares
+## Head-to-head: bison-db vs redb
 
-A controlled, populated head-to-head against peer engines (a pure-Rust embedded
-store such as `redb` or `sled`, and a document database such as MongoDB) is
-planned for the release-candidate cycle, where it can be set up fairly and
-without adding a heavy benchmark dependency to the library itself. Until then,
-this is the honest **architectural** comparison.
+The closest single peer to bison-db's storage engine is
+[`redb`](https://github.com/cberner/redb) — a pure-Rust, actively-maintained,
+ACID embedded key/value store. The harness lives in
+[`benchmarks/`](../benchmarks), a **standalone crate detached from the package**,
+so redb never enters bison-db's own dependency tree, audit surface, or CI.
+Reproduce it with `cd benchmarks && cargo run --release`.
+
+**Workload.** 100,000 records, a 64-byte payload, keyed `1..=N`; bulk insert with
+one durability sync per engine (bison-db `Manual` + one `flush`; redb one write
+transaction committed once — no per-operation `fsync` on either side), then
+100,000 random point reads after a cold reopen. Median of three trials,
+Linux/WSL2, x86_64, Rust 1.95, release.
+
+| Metric | bison-db | redb | Result |
+|--------|---------:|-----:|--------|
+| Insert (records/s) | **~1.9 M** | ~1.1 M | bison-db ~1.85× faster |
+| Read (per op) | ~285 ns | **~215 ns** | redb ~1.3× faster |
+| File size | **~10.9 MB** | ~17.0 MB | bison-db ~35% smaller |
+
+**Reading the result honestly.** bison-db wins bulk writes and disk footprint;
+redb wins point reads. The split makes architectural sense:
+
+- **Writes** — bison-db's log-structured append is a sequential write per record
+  with no page management or B-tree rebalancing, so it loads faster.
+- **Disk** — bison-db's compact tagged encoding packs the same data smaller than
+  redb's paged B-tree layout here.
+- **Reads** — redb is memory-mapped, so a point read is a pointer chase in cached
+  pages. bison-db does a positional `read` syscall per `get` and then decodes a
+  **full typed document** (redb returns the raw bytes). That bison-db is only
+  ~1.3× behind while doing strictly more work per read is a reasonable showing,
+  and the gap is a known, honest optimization avenue (a read cache or memory-
+  mapped reads) for a later release — not a design limit.
+
+The takeaway is not "bison-db beats everything"; it is that bison-db is
+**competitive with a respected pure-Rust engine** — ahead on writes and size,
+modestly behind on reads — while offering a richer document model on top.
+
+## The bigger picture: vs a networked document database
 
 The decisive factor is not micro-optimization — it is *where the work runs*. A
 server document database (MongoDB and the like) answers a query over a network

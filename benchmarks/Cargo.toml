@@ -1,0 +1,26 @@
+# Standalone head-to-head benchmark crate.
+#
+# This is intentionally NOT part of the bison-db package or any workspace: the
+# empty `[workspace]` table below detaches it, so the peer-engine dependencies
+# (redb) never enter the published crate's lockfile, `cargo audit`/`cargo deny`
+# surface, or CI. Run it manually from this directory:
+#
+#   cargo run --release
+[package]
+name    = "bison-benchmarks"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Detach from the parent crate so `cargo` at the repo root never builds this and
+# its dependencies never touch the main package.
+[workspace]
+
+[dependencies]
+bison-db = { path = ".." }
+redb     = "2"
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1

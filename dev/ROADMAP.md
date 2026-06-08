@@ -112,10 +112,24 @@ confidence, not features.
 
 ---
 
-## v0.8.0 -> v1.0.0 -- RC / Stable
+## v0.8.0 -- Release candidate: head-to-head (DONE)
 
-Controlled head-to-head benchmark against peer engines, real-consumer
-integration, a final soak, then publish 1.0 with the API and format frozen here.
+- Controlled head-to-head benchmark against `redb` (pure-Rust ACID embedded KV),
+  in a standalone `benchmarks/` crate detached from the package so the peer
+  dependency never touches bison-db's tree, audit surface, or CI. Result (100k
+  records, matched durability): bison-db ~1.85x faster on bulk insert and ~35%
+  smaller on disk; redb ~1.3x faster on point reads. Recorded with full method in
+  `docs/PERFORMANCE.md`.
+- Known read-side optimization avenue (read cache / memory-mapped reads)
+  documented for a post-1.0 release; not a blocker, since the API and format are
+  frozen and the gap is modest.
+
+---
+
+## v0.9.0 -> v1.0.0 -- Final soak / Stable
+
+A final soak against real usage, then publish 1.0 with the API and format frozen
+here. No further API or format changes are planned before 1.0.
 
 ---
 

@@ -18,7 +18,7 @@
 #╚═══════════════════════════════════════════
 [package] 
 name    = "bison-db"
-version = "0.7.0"
+version = "0.8.0"
 
 # Minimum supported Rust version and edition
 rust-version = "1.85"
@@ -55,6 +55,10 @@ categories = [
     "database-implementations",
     "data-structures"
 ]
+
+# Keep the standalone head-to-head benchmark crate out of the published package;
+# it is a separate, detached crate with peer-engine dependencies.
+exclude = ["benchmarks/"]
 
 # Metadata for docs.rs
 [package.metadata.docs.rs]

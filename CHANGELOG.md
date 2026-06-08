@@ -10,6 +10,24 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-08
+
+Release candidate: a controlled head-to-head benchmark against a peer engine. No
+code changes to the library — the API and on-disk format remain frozen.
+
+### Added
+
+- `benchmarks/`: a standalone, package-detached crate that benchmarks bison-db
+  head-to-head against `redb` (a pure-Rust ACID embedded key/value store) on a
+  matched workload. Because it is its own workspace, redb never enters bison-db's
+  dependency tree, `cargo audit`/`cargo deny` surface, or CI; the main package
+  excludes it from publication.
+- `docs/PERFORMANCE.md`: a measured "Head-to-head: bison-db vs redb" section
+  reporting the result (100k records, matched durability) — bison-db ~1.85×
+  faster on bulk insert and ~35% smaller on disk; redb ~1.3× faster on point
+  reads — with method, environment, and an honest read of the split. The prior
+  "deferred to the RC" note is replaced with these numbers.
+
 ## [0.7.0] - 2026-06-08
 
 Beta soak testing. More confidence on top of the frozen API and format: a
@@ -190,7 +208,8 @@ Initial scaffold and repository bootstrap. No domain logic yet &mdash; this rele
 - `.github/workflows/ci.yml` (Node 24 actions; fmt, clippy, test, doc, audit, deny) and `.github/FUNDING.yml`.
 
 <!-- LINKS -->
-[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/jamesgober/bison-db/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jamesgober/bison-db/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jamesgober/bison-db/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jamesgober/bison-db/compare/v0.4.0...v0.5.0
