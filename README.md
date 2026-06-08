@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). Schemaless documents. Single-file storage. Crash-safe, embedded, zero-network.
     </p>
     <blockquote>
-        <strong>Status: pre-1.0 (release candidate), API frozen.</strong> As of <code>v0.9.0</code> the document model, the single-file store, secondary indexes with field and range queries, a configurable durability policy, and space-reclaiming compaction are all implemented; hardened with fuzz-tested parse/recovery paths, a randomized soak test, and a sustained-load concurrency soak; and <a href="./docs/PERFORMANCE.md">benchmarked head-to-head</a> against a peer engine. The <a href="./docs/FORMAT.md">on-disk format is frozen</a> (version 1) and the <a href="./dev/ROADMAP.md">public API is frozen</a> (additive-only until 1.0). This is the final pre-<code>1.0.0</code> candidate.
+        <strong>Status: stable (<code>1.0.0</code>).</strong> The document model, the single-file store, secondary indexes with field and range queries, a configurable durability policy, and space-reclaiming compaction are all implemented; hardened with fuzz-tested parse/recovery paths, a randomized soak test, and a sustained-load concurrency soak; and <a href="./docs/PERFORMANCE.md">benchmarked head-to-head</a> against a peer engine. The <a href="./docs/FORMAT.md">on-disk format</a> (version 1) and the <a href="./docs/API.md">public API</a> are a stability commitment: no breaking change until 2.0, per semantic versioning.
     </blockquote>
 </div>
 
@@ -53,10 +53,10 @@ Available now (`v0.4.0`):
 - **Field and range queries** &mdash; `find` by an exact field value, `range` over an ordered field
 - **Optional `serde`** &mdash; move documents in and out of JSON, MessagePack, or any serde format
 
-On the roadmap (`v0.6.0` &rarr; `1.0.0`, see [`dev/ROADMAP.md`](./dev/ROADMAP.md)):
+Possible future directions (post-1.0, additive only — the 1.0 API and format do not change):
 
-- **Hardening and real-consumer integration** toward a stable 1.0
-- **Final benchmarks** and a populated head-to-head comparison
+- **Read cache / memory-mapped reads** &mdash; close the modest point-read gap to memory-mapped engines
+- **Persistent / lazily-rebuilt indexes** &mdash; avoid re-declaring indexes after reopening, via a sidecar file
 
 <br>
 <hr>
@@ -66,10 +66,10 @@ On the roadmap (`v0.6.0` &rarr; `1.0.0`, see [`dev/ROADMAP.md`](./dev/ROADMAP.md
 
 ```toml
 [dependencies]
-bison-db = "0.9"
+bison-db = "1.0"
 
 # With serde support for the document model:
-bison-db = { version = "0.9", features = ["serde"] }
+bison-db = { version = "1.0", features = ["serde"] }
 ```
 
 <br>

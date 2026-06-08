@@ -18,8 +18,8 @@
 </div>
 <br>
 
-> Complete reference for every public item in `bison-db` as of `v0.9.0`, with runnable examples.
-> The crate is pre-1.0: the surface grows across the 0.x series (see [`dev/ROADMAP.md`](../dev/ROADMAP.md)) and is frozen at `1.0.0`. Items marked _(planned)_ are not yet implemented.
+> Complete reference for every public item in `bison-db` as of `v1.0.0`, with runnable examples.
+> This is the **stable** API: it will not change incompatibly until 2.0, per semantic versioning.
 
 ## Table of Contents
 
@@ -40,7 +40,7 @@
 - [Concurrency](#concurrency)
 - [Durability and recovery](#durability-and-recovery)
 - [Feature flags](#feature-flags)
-- [Roadmap surface](#roadmap-surface)
+- [Stability and future direction](#stability-and-future-direction)
 
 ---
 
@@ -48,10 +48,10 @@
 
 ```toml
 [dependencies]
-bison-db = "0.9"
+bison-db = "1.0"
 
 # Enable serde for the document model:
-bison-db = { version = "0.9", features = ["serde"] }
+bison-db = { version = "1.0", features = ["serde"] }
 ```
 
 The default `std` feature provides the file-backed [`Db`]. Disabling it
@@ -934,22 +934,18 @@ fn main() -> bison_db::Result<()> {
 
 ---
 
-## Roadmap surface
+## Stability and future direction
 
-The public API is **frozen** as of v0.5.0: additive changes only until 1.0, no
-breaking change before then. The items below are **not yet implemented** and are
-listed so integrators can see the intended direction; tracked in
-[`dev/ROADMAP.md`](../dev/ROADMAP.md).
+The public API documented above is **stable as of 1.0.0**: no breaking change
+until 2.0, per semantic versioning. The on-disk format (version 1) is frozen too
+— files written by 0.2.0 onward stay readable. Future work is **additive only**
+and does not alter the surface above; possible directions, tracked in
+[`dev/ROADMAP.md`](../dev/ROADMAP.md):
 
-- **1.0.0 — Stable** — tag and publish with the API and format frozen here.
-  (v0.6.0 fuzzed the parse/recovery paths; v0.7.0 added a randomized soak test;
-  v0.8.0 added a controlled head-to-head against `redb`; v0.9.0 added a
-  sustained-load concurrency soak — see [`docs/PERFORMANCE.md`](./PERFORMANCE.md).)
-- **Read cache / memory-mapped reads** _(post-1.0)_ — close the modest point-read
-  gap to memory-mapped engines; an additive optimization, not an API change.
-- **Persistent / lazily-rebuilt indexes** _(post-1.0)_ — avoid re-declaring
-  indexes after reopening a store, via a sidecar file that does not change the
-  frozen main format.
+- **Read cache / memory-mapped reads** — close the modest point-read gap to
+  memory-mapped engines; an internal optimization, not an API change.
+- **Persistent / lazily-rebuilt indexes** — avoid re-declaring indexes after
+  reopening a store, via a sidecar file that does not change the frozen format.
 
 ---
 

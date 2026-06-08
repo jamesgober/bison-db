@@ -10,6 +10,36 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-06-08
+
+The stable release. The public API and the on-disk format (version 1) are now a
+**stability commitment**: no breaking change until 2.0, per semantic versioning.
+Files written by 0.2.0 onward remain readable. No code changed from 0.9.0 — this
+release declares the surface stable.
+
+### Summary of the 1.0 surface
+
+- **Document model** — `Value` (null, bool, i64, f64, string, bytes, array,
+  nested object) and an insertion-ordered `Document`.
+- **Single-file store** — `Db` with `open`/`insert`/`get`/`update`/`delete`/
+  `flush`/`compact`, log-structured and crash-safe (CRC-32C framing,
+  torn-tail recovery).
+- **Secondary indexes** — `create_index`/`find`/`range` over any number of
+  fields; queries also work without an index.
+- **Durability** — `SyncPolicy` (`Always`/`Manual`) via `DbOptions`.
+- **Compaction** — `Db::compact` reclaims dead space via a crash-safe atomic swap.
+- **Concurrency** — single-writer, multi-reader; `Db: Send + Sync`, shared behind
+  `Arc<RwLock<Db>>`.
+- **Optional `serde`** and a `no_std` document-model build.
+
+### Stability guarantee
+
+- The public API will not change incompatibly before 2.0.
+- The on-disk format is version 1 and frozen; a future incompatible format would
+  bump both the format version and the crate's major version.
+- Future work (read cache, persistent indexes) is additive and does not alter the
+  1.0 surface.
+
 ## [0.9.0] - 2026-06-08
 
 Final soak before 1.0: concurrency under sustained load. The API and on-disk
@@ -223,7 +253,8 @@ Initial scaffold and repository bootstrap. No domain logic yet &mdash; this rele
 - `.github/workflows/ci.yml` (Node 24 actions; fmt, clippy, test, doc, audit, deny) and `.github/FUNDING.yml`.
 
 <!-- LINKS -->
-[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/jamesgober/bison-db/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/jamesgober/bison-db/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/jamesgober/bison-db/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jamesgober/bison-db/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jamesgober/bison-db/compare/v0.6.0...v0.7.0

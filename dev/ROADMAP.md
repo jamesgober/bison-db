@@ -139,10 +139,16 @@ and unchanged.
 
 ---
 
-## v1.0.0 -- Stable
+## v1.0.0 -- Stable (DONE)
 
-Tag and publish with the API and format frozen here. No further API or format
-changes; 1.0 is the stability commitment.
+The stable release. Every roadmap item is delivered: document model, single-file
+store, secondary indexes with field and range queries, configurable durability,
+crash-safe recovery, space-reclaiming compaction, and a single-writer/multi-reader
+concurrency model — fuzz-tested, soak-tested, and benchmarked head-to-head.
+
+The public API and the on-disk format (version 1) are the **stability
+commitment**: no breaking change until 2.0, per semantic versioning. Files
+written by 0.2.0 onward remain readable.
 
 ---
 
