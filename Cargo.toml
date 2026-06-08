@@ -18,7 +18,7 @@
 #╚═══════════════════════════════════════════
 [package] 
 name    = "bison-db"
-version = "0.3.0"
+version = "0.4.0"
 
 # Minimum supported Rust version and edition
 rust-version = "1.85"
@@ -106,11 +106,11 @@ loom = "0.7"
 [[example]]
 name              = "json_interop"
 required-features = ["serde"]
-# ---------------------------------------------------
+# ===================================================
 # The JSON interop example needs the `serde` feature; 
 # gate it so a plain  `cargo build --examples` 
 # does not try to compile it without `serde` present.
-# ---------------------------------------------------
+# ===================================================
 
 
 

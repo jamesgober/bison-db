@@ -10,6 +10,37 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-08
+
+Durability you can tune, recovery hardening, and a frozen on-disk format. The
+store is log-structured, so the data file already provides write-ahead
+durability; rather than add a redundant second log, this release makes durability
+*configurable* and declares the file layout stable.
+
+### Added
+
+- `SyncPolicy` (`Always` / `Manual`) and `DbOptions`, a small builder for opening
+  a store with a chosen durability policy.
+- `Db::open_with` and `Db::sync_policy` to open with options and read the active
+  policy. `Db::open` is unchanged and uses `SyncPolicy::Manual`.
+- `SyncPolicy::Always` issues an `fsync` after every write, so each insert,
+  update, and delete is durable the moment it returns.
+- Best-effort `fsync` on `Db` drop under `Manual`, so a clean shutdown does not
+  lose unflushed writes.
+- Parent-directory `fsync` on file creation (Unix), making a new store's
+  existence durable; a documented no-op on Windows, where file-level `fsync`
+  already persists the entry.
+- `docs/FORMAT.md`: the byte-level on-disk format specification.
+- `durability` example and a Criterion benchmark comparing `Manual` and `Always`
+  insert costs.
+
+### Changed
+
+- **On-disk format frozen at version 1.** The layout in `docs/FORMAT.md` is
+  stable; files written by 0.2.0 onward remain readable by every later release.
+- Documented the durability contract in terms of `SyncPolicy` across the crate
+  docs.
+
 ## [0.3.0] - 2026-06-07
 
 Secondary indexes and field queries. Index any number of document fields, then
@@ -88,7 +119,8 @@ Initial scaffold and repository bootstrap. No domain logic yet &mdash; this rele
 - `.github/workflows/ci.yml` (Node 24 actions; fmt, clippy, test, doc, audit, deny) and `.github/FUNDING.yml`.
 
 <!-- LINKS -->
-[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jamesgober/bison-db/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jamesgober/bison-db/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jamesgober/bison-db/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jamesgober/bison-db/releases/tag/v0.1.0

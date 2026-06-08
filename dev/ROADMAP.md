@@ -41,10 +41,17 @@ Exit criteria:
 
 ---
 
-## v0.4.0 -- WAL + crash recovery + on-disk format freeze
+## v0.4.0 -- durability policy + crash recovery + on-disk format freeze (DONE)
+
+bison-db is log-structured, so the data file already provides write-ahead
+durability; rather than bolt on a redundant second log, v0.4.0 makes durability
+*configurable* (`SyncPolicy::Always` for per-write `fsync`, `Manual` for
+flush-controlled), hardens recovery (parent-directory `fsync` on create,
+best-effort sync on drop), and **freezes the on-disk format** (version 1, spec in
+`docs/FORMAT.md`). Files from 0.2.0 onward stay readable by every later release.
 
 Exit criteria:
-- [ ] No `todo!`/`unimplemented!`. Feature freeze declared.
+- [x] No `todo!`/`unimplemented!`. On-disk format frozen and specified.
 
 ---
 

@@ -93,4 +93,4 @@ pub use error::{Error, Result};
 pub use value::{Document, Value};
 
 #[cfg(feature = "std")]
-pub use store::{Db, DocId, MAX_RECORD_BYTES, Stats};
+pub use store::{Db, DbOptions, DocId, MAX_RECORD_BYTES, Stats, SyncPolicy};

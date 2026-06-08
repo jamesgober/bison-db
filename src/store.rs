@@ -20,12 +20,19 @@
 //! ## Durability
 //!
 //! A record reaches the OS page cache as soon as it is written, so it is visible
-//! to later reads in the same process immediately. It is durable against a power
-//! loss only after [`Db::flush`] returns, which issues an `fsync`. A crash
-//! before `flush` may lose the most recent unsynced records but never tears an
-//! earlier one. Full write-ahead-log durability and group commit arrive in a
-//! later release; this module's contract is "no corruption, last-unsynced-writes
-//! may be lost".
+//! to later reads in the same process immediately. When it becomes durable
+//! against a power loss is governed by the store's [`SyncPolicy`]:
+//!
+//! - [`SyncPolicy::Always`] forces an `fsync` after every write, so each
+//!   operation is durable the moment it returns.
+//! - [`SyncPolicy::Manual`] (the default) syncs only on [`Db::flush`] and once,
+//!   best-effort, on drop. It is faster, and writes remain crash-*safe* — a torn
+//!   write is never misread — but the most recent unsynced writes can be lost on
+//!   power loss.
+//!
+//! Either way the on-disk invariant holds: a crash never tears a record that was
+//! already durable. On a newly created file, the parent directory is `fsync`ed
+//! so the file's existence is itself durable.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -51,7 +58,10 @@ pub const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 /// header layout, distinct from the format version that follows it.
 const HEADER_MAGIC: [u8; 8] = *b"BISONDB1";
 
-/// On-disk format version. Bumped only on an incompatible record-layout change.
+/// On-disk format version. Frozen at `1` as of v0.4.0: the layout described in
+/// `docs/FORMAT.md` is stable, and files written by 0.2.0 onward are readable by
+/// every later release. Bumped only on an incompatible record-layout change,
+/// which would be a major-version event.
 const FORMAT_VERSION: u16 = 1;
 
 /// Length of the file header: 8 magic bytes, a `u16` version, 6 reserved bytes.
@@ -159,6 +169,135 @@ pub struct Stats {
     pub live_bytes: u64,
 }
 
+/// When a write is made durable on disk.
+///
+/// bison-db never holds writes in a userspace buffer — every write reaches the
+/// operating system immediately and is visible to later reads. This policy
+/// controls only when the store forces those bytes through the OS cache to the
+/// physical device with `fsync`, which is what protects them from a power loss.
+///
+/// # Examples
+///
+/// ```
+/// # fn main() -> bison_db::Result<()> {
+/// use bison_db::{DbOptions, SyncPolicy};
+/// # let path = std::env::temp_dir().join("bison_db_syncpolicy_doc.bison");
+/// # let _ = std::fs::remove_file(&path);
+/// // Durable per write, at the cost of an fsync on every insert/update/delete.
+/// let db = DbOptions::new().sync(SyncPolicy::Always).open(&path)?;
+/// # drop(db);
+/// # let _ = std::fs::remove_file(&path);
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SyncPolicy {
+    /// `fsync` after every write before it returns. Each insert, update, and
+    /// delete is durable the moment the call completes, at the cost of one
+    /// device sync per operation.
+    Always,
+    /// `fsync` only when [`Db::flush`] is called (and once, best-effort, when the
+    /// store is dropped). Writes are still crash-*safe* — a torn write is never
+    /// misread — but the most recent unsynced writes can be lost on power loss.
+    /// This is the default, and the fastest policy.
+    #[default]
+    Manual,
+}
+
+/// Options for opening a [`Db`], built fluently and finished with
+/// [`open`](DbOptions::open).
+///
+/// Use this when the default [`Db::open`] is not enough — currently, to choose a
+/// [`SyncPolicy`]. The set of options is intentionally small and will only grow
+/// additively.
+///
+/// # Examples
+///
+/// ```
+/// # fn main() -> bison_db::Result<()> {
+/// use bison_db::{DbOptions, SyncPolicy};
+/// # let path = std::env::temp_dir().join("bison_db_dboptions_doc.bison");
+/// # let _ = std::fs::remove_file(&path);
+/// let db = DbOptions::new().sync(SyncPolicy::Always).open(&path)?;
+/// assert_eq!(db.sync_policy(), SyncPolicy::Always);
+/// # drop(db);
+/// # let _ = std::fs::remove_file(&path);
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DbOptions {
+    sync: SyncPolicy,
+}
+
+impl DbOptions {
+    /// Creates options with the defaults ([`SyncPolicy::Manual`]).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bison_db::{DbOptions, SyncPolicy};
+    /// assert_eq!(DbOptions::new().build_sync_policy(), SyncPolicy::Manual);
+    /// ```
+    #[must_use]
+    pub fn new() -> Self {
+        DbOptions::default()
+    }
+
+    /// Sets the [`SyncPolicy`] for the store.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bison_db::{DbOptions, SyncPolicy};
+    /// let opts = DbOptions::new().sync(SyncPolicy::Always);
+    /// assert_eq!(opts.build_sync_policy(), SyncPolicy::Always);
+    /// ```
+    #[must_use]
+    pub fn sync(mut self, policy: SyncPolicy) -> Self {
+        self.sync = policy;
+        self
+    }
+
+    /// Returns the [`SyncPolicy`] these options currently carry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bison_db::{DbOptions, SyncPolicy};
+    /// assert_eq!(DbOptions::new().build_sync_policy(), SyncPolicy::Manual);
+    /// ```
+    #[must_use]
+    pub fn build_sync_policy(&self) -> SyncPolicy {
+        self.sync
+    }
+
+    /// Opens (or creates) the store at `path` with these options.
+    ///
+    /// Equivalent to [`Db::open`] when the options are the defaults.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Db::open`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> bison_db::Result<()> {
+    /// use bison_db::{DbOptions, SyncPolicy};
+    /// # let path = std::env::temp_dir().join("bison_db_dboptions_open_doc.bison");
+    /// # let _ = std::fs::remove_file(&path);
+    /// let db = DbOptions::new().sync(SyncPolicy::Always).open(&path)?;
+    /// # drop(db);
+    /// # let _ = std::fs::remove_file(&path);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn open<P: AsRef<Path>>(self, path: P) -> Result<Db> {
+        Db::open_inner(path.as_ref().to_path_buf(), self.sync)
+    }
+}
+
 /// An embedded document store backed by a single append-only file.
 ///
 /// Open one with [`Db::open`], then [`insert`](Db::insert),
@@ -206,6 +345,8 @@ pub struct Db {
     /// Secondary indexes by field name, built on demand and maintained on every
     /// write. Not persisted: rebuilt via [`Db::create_index`] each session.
     indexes: HashMap<String, SecondaryIndex>,
+    /// When to force writes to disk with `fsync`.
+    sync: SyncPolicy,
 }
 
 impl Db {
@@ -220,6 +361,9 @@ impl Db {
     /// checksum failure on a record that is *not* at the tail is reported as
     /// [`Error::Corrupt`], because that indicates in-place damage rather than a
     /// torn write.
+    ///
+    /// Uses [`SyncPolicy::Manual`]; for a different policy, open through
+    /// [`DbOptions`].
     ///
     /// # Errors
     ///
@@ -241,7 +385,38 @@ impl Db {
     /// # }
     /// ```
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
+        DbOptions::new().open(path)
+    }
+
+    /// Opens (or creates) the store at `path` with the given [`DbOptions`].
+    ///
+    /// A shorthand for [`DbOptions::open`]; see [`Db::open`] for the open and
+    /// recovery contract.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Db::open`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> bison_db::Result<()> {
+    /// use bison_db::{Db, DbOptions, SyncPolicy};
+    /// # let path = std::env::temp_dir().join("bison_db_open_with_example.bison");
+    /// # let _ = std::fs::remove_file(&path);
+    /// let db = Db::open_with(&path, DbOptions::new().sync(SyncPolicy::Always))?;
+    /// assert_eq!(db.sync_policy(), SyncPolicy::Always);
+    /// # drop(db);
+    /// # let _ = std::fs::remove_file(&path);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn open_with<P: AsRef<Path>>(path: P, options: DbOptions) -> Result<Self> {
+        options.open(path)
+    }
+
+    /// The shared open path used by [`Db::open`] and [`DbOptions::open`].
+    fn open_inner(path: PathBuf, sync: SyncPolicy) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -258,15 +433,40 @@ impl Db {
             next_id: 1,
             scratch: Vec::with_capacity(256),
             indexes: HashMap::new(),
+            sync,
         };
 
         if file_len == 0 {
             db.write_header()?;
+            // Make the newly created file's directory entry durable, so the file
+            // is guaranteed to exist after a crash that follows creation.
+            sync_parent_dir(&db.path)?;
         } else {
             db.verify_header(file_len)?;
             db.replay(file_len)?;
         }
         Ok(db)
+    }
+
+    /// Returns the store's [`SyncPolicy`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> bison_db::Result<()> {
+    /// use bison_db::{Db, SyncPolicy};
+    /// # let path = std::env::temp_dir().join("bison_db_syncpolicy_getter.bison");
+    /// # let _ = std::fs::remove_file(&path);
+    /// let db = Db::open(&path)?;
+    /// assert_eq!(db.sync_policy(), SyncPolicy::Manual);
+    /// # drop(db);
+    /// # let _ = std::fs::remove_file(&path);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn sync_policy(&self) -> SyncPolicy {
+        self.sync
     }
 
     /// Inserts `doc`, assigning and returning a fresh [`DocId`].
@@ -827,6 +1027,10 @@ impl Db {
             }
             _ => {}
         }
+
+        if self.sync == SyncPolicy::Always {
+            self.file.sync_all()?;
+        }
         Ok(())
     }
 
@@ -930,8 +1134,43 @@ impl fmt::Debug for Db {
             .field("path", &self.path)
             .field("live_documents", &self.index.len())
             .field("file_bytes", &self.tail)
+            .field("sync", &self.sync)
             .finish()
     }
+}
+
+impl Drop for Db {
+    /// Makes a best-effort `fsync` on a clean shutdown under
+    /// [`SyncPolicy::Manual`], so a normal program exit does not lose writes that
+    /// were never explicitly flushed. Under [`SyncPolicy::Always`] every write is
+    /// already durable, so nothing is done. Any error here is ignored because a
+    /// destructor cannot return one; call [`Db::flush`] before dropping when you
+    /// need to observe a sync failure.
+    fn drop(&mut self) {
+        if self.sync == SyncPolicy::Manual {
+            let _ = self.file.sync_all();
+        }
+    }
+}
+
+/// Forces the directory containing `path` to disk, so the file's creation is
+/// durable. On Unix this is a real `fsync` of the parent directory; on Windows,
+/// directory handles do not support this and file-level `fsync` already persists
+/// the entry, so this is a documented no-op.
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path) -> Result<()> {
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    let dir = parent.unwrap_or_else(|| Path::new("."));
+    let handle = File::open(dir)?;
+    handle.sync_all()?;
+    Ok(())
+}
+
+/// Windows counterpart to [`sync_parent_dir`]: a no-op, because the file-level
+/// `fsync` already makes the directory entry durable on this platform.
+#[cfg(windows)]
+fn sync_parent_dir(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1207,6 +1446,50 @@ mod tests {
         assert_eq!(db.indexes().count(), 0); // indexes are not on disk
         db.create_index("city").unwrap(); // rebuild from the log
         assert_eq!(db.find("city", &Value::from(7_i64)).unwrap(), vec![id]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_default_sync_policy_is_manual() {
+        let path = temp_path();
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.sync_policy(), SyncPolicy::Manual);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_options_set_always_sync_policy() {
+        let path = temp_path();
+        let mut db = Db::open_with(&path, DbOptions::new().sync(SyncPolicy::Always)).unwrap();
+        assert_eq!(db.sync_policy(), SyncPolicy::Always);
+        // Every write fsyncs; data is present and reopen recovers it.
+        let id = db.insert(doc(&[("v", 1)])).unwrap();
+        assert!(db.get(id).unwrap().is_some());
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.len(), 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_always_sync_persists_without_explicit_flush() {
+        let path = temp_path();
+        let id;
+        {
+            let mut db = Db::open_with(&path, DbOptions::new().sync(SyncPolicy::Always)).unwrap();
+            id = db.insert(doc(&[("durable", 1)])).unwrap();
+            // No flush() call: Always already synced each write.
+        }
+        let db = Db::open(&path).unwrap();
+        assert!(db.get(id).unwrap().is_some());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_dboptions_open_matches_db_open() {
+        let path = temp_path();
+        let db = DbOptions::new().open(&path).unwrap();
+        assert_eq!(db.sync_policy(), SyncPolicy::Manual);
         let _ = std::fs::remove_file(&path);
     }
 }

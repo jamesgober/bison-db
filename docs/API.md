@@ -16,7 +16,7 @@
 </div>
 <br>
 
-> Complete reference for every public item in `bison-db` as of `v0.3.0`, with runnable examples.
+> Complete reference for every public item in `bison-db` as of `v0.4.0`, with runnable examples.
 > The crate is pre-1.0: the surface grows across the 0.x series (see [`dev/ROADMAP.md`](../dev/ROADMAP.md)) and is frozen at `1.0.0`. Items marked _(planned)_ are not yet implemented.
 
 ## Table of Contents
@@ -28,6 +28,7 @@
 - [Public APIs](#public-apis)
   - [`Db`](#db)
   - [Secondary indexes and queries](#secondary-indexes-and-queries)
+  - [`DbOptions` and `SyncPolicy`](#dboptions)
   - [`DocId`](#docid)
   - [`Stats`](#stats)
   - [`Document`](#document)
@@ -44,10 +45,10 @@
 
 ```toml
 [dependencies]
-bison-db = "0.3"
+bison-db = "0.4"
 
 # Enable serde for the document model:
-bison-db = { version = "0.3", features = ["serde"] }
+bison-db = { version = "0.4", features = ["serde"] }
 ```
 
 The default `std` feature provides the file-backed [`Db`]. Disabling it
@@ -327,6 +328,8 @@ fn main() -> bison_db::Result<()> {
 | `flush` | `fn flush(&mut self) -> Result<()>` | `fsync`s the file, making preceding writes durable against power loss. |
 | `path` | `fn path(&self) -> &Path` | The path the store was opened from. |
 | `stats` | `fn stats(&self) -> Stats` | A [`Stats`](#stats) snapshot of size and live contents. |
+| `open_with` | `fn open_with<P>(path: P, options: DbOptions) -> Result<Db>` | Open with a [`DbOptions`](#dboptions) configuration (e.g. a durability policy). |
+| `sync_policy` | `fn sync_policy(&self) -> SyncPolicy` | The store's current [`SyncPolicy`](#dboptions). |
 
 ```rust
 use bison_db::{Db, Document};
@@ -478,6 +481,64 @@ fn main() -> bison_db::Result<()> {
     assert_eq!(db.indexes().count(), 2);
     assert!(db.drop_index("a"));
     assert!(!db.drop_index("a"));
+    # let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+```
+
+<br>
+
+<a id="dboptions"></a>
+
+### `DbOptions` and `SyncPolicy`
+
+Open a store with a non-default configuration — currently, a durability policy.
+
+```rust,ignore
+pub enum SyncPolicy { Always, Manual }   // Manual is the default
+
+pub struct DbOptions { /* private */ }
+impl DbOptions {
+    pub fn new() -> Self;
+    pub fn sync(self, policy: SyncPolicy) -> Self;
+    pub fn build_sync_policy(&self) -> SyncPolicy;
+    pub fn open<P: AsRef<Path>>(self, path: P) -> Result<Db>;
+}
+```
+
+bison-db never buffers writes in userspace — every write reaches the OS
+immediately and is visible to later reads. `SyncPolicy` controls only when those
+bytes are forced to the physical device with `fsync`:
+
+| Policy | When it `fsync`s | Trade-off |
+|--------|------------------|-----------|
+| `SyncPolicy::Always` | after every write, before it returns | each write durable immediately; one device sync per op |
+| `SyncPolicy::Manual` *(default)* | on [`Db::flush`], and best-effort on drop | fastest; recent unsynced writes can be lost on power loss |
+
+Under **both** policies the file is never left corrupt: a torn write is detected
+and truncated on the next open (see [Durability and recovery](#durability-and-recovery)).
+
+Open with options through [`DbOptions::open`] or [`Db::open_with`]; read the
+active policy with [`Db::sync_policy`].
+
+```rust
+use bison_db::{Db, DbOptions, Document, SyncPolicy};
+
+fn main() -> bison_db::Result<()> {
+    # let path = std::env::temp_dir().join("bison_db_api_durability.bison");
+    # let _ = std::fs::remove_file(&path);
+    // Durable per write.
+    let mut db = Db::open_with(&path, DbOptions::new().sync(SyncPolicy::Always))?;
+    assert_eq!(db.sync_policy(), SyncPolicy::Always);
+    db.insert({ let mut d = Document::new(); d.set("entry", "debit 100"); d })?;
+    // No flush needed under Always — each write already fsynced.
+
+    # drop(db);
+    // The default is Manual, where you control when the sync happens.
+    let mut fast = Db::open(&path)?;
+    assert_eq!(fast.sync_policy(), SyncPolicy::Manual);
+    fast.insert({ let mut d = Document::new(); d.set("entry", "credit 50"); d })?;
+    fast.flush()?; // durable now
     # let _ = std::fs::remove_file(&path);
     Ok(())
 }
@@ -761,20 +822,20 @@ assert_eq!(bison_db::MAX_RECORD_BYTES, 64 * 1024 * 1024);
 
 - **Visibility.** A write is visible to later reads in the same process as soon
   as the call returns.
-- **Durability.** A write is durable against power loss only after
-  [`Db::flush`] returns (it issues an `fsync`). A crash before `flush` may lose
-  the most recent unsynced writes.
+- **Durability.** When a write reaches the physical device depends on the
+  store's [`SyncPolicy`](#dboptions): `Always` `fsync`s after every write;
+  `Manual` (default) `fsync`s on [`Db::flush`] and, best-effort, on drop. A
+  freshly created file also has its parent directory `fsync`ed so the file's
+  existence is durable.
 - **No corruption.** A crash never tears a record that was already durable.
   Every record is length-framed and CRC-32C checked. On open, the log is
   replayed: a partial record at the tail (short read or failing checksum at the
   end of the file) is truncated; a checksum failure earlier in the file is
   surfaced as [`Error::Corrupt`] rather than silently misread.
-- **Versioned format.** The file header carries a format version; a file written
-  by a newer release is refused with [`Error::UnsupportedVersion`] instead of
-  being misinterpreted.
-
-Full write-ahead-log durability, group commit, and a frozen on-disk format are
-scheduled for `v0.4.0`.
+- **Frozen, versioned format.** The on-disk layout is **stable as of v0.4.0**
+  (format version 1) and specified in [`docs/FORMAT.md`](./FORMAT.md). Files
+  written by 0.2.0 onward stay readable; a file written by a newer format is
+  refused with [`Error::UnsupportedVersion`] rather than misinterpreted.
 
 ---
 
@@ -792,12 +853,13 @@ scheduled for `v0.4.0`.
 These are **not yet implemented** and are listed so integrators can see the
 intended shape. Track them in [`dev/ROADMAP.md`](../dev/ROADMAP.md).
 
-- **Write-ahead log** _(planned, v0.4.0)_ — group-commit durability and a frozen
-  on-disk format.
-- **Persistent / lazily-rebuilt indexes** _(planned, v0.4.0+)_ — avoid
-  re-declaring indexes after reopening a store.
+- **Concurrency** _(planned, v0.5.0)_ — safe shared-access patterns for
+  multi-threaded workloads.
 - **Compaction** _(planned, v0.5.0)_ — reclaim space held by superseded and
   deleted records.
+- **Persistent / lazily-rebuilt indexes** _(planned, post-1.0)_ — avoid
+  re-declaring indexes after reopening a store, via a sidecar file that does not
+  change the frozen main format.
 
 ---
 

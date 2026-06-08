@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use bison_db::{Db, Document, Value};
+use bison_db::{Db, DbOptions, Document, SyncPolicy, Value};
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 
@@ -126,5 +126,48 @@ fn bench_find(c: &mut Criterion) {
     let _ = std::fs::remove_file(&path);
 }
 
-criterion_group!(benches, bench_insert, bench_get, bench_update, bench_find);
+/// Insert cost under each durability policy: `Manual` (sync on flush) versus
+/// `Always` (fsync every write). The gap is the price of per-operation
+/// durability, and it is dominated by the device, not by bison-db.
+fn bench_durability(c: &mut Criterion) {
+    let mut group = c.benchmark_group("insert_by_sync_policy");
+
+    let manual_path = temp_path("sync_manual");
+    let mut manual = Db::open(&manual_path).expect("open");
+    let mut i = 0_i64;
+    group.bench_function("manual", |b| {
+        b.iter(|| {
+            let id = manual.insert(small_doc(black_box(i))).expect("insert");
+            i += 1;
+            black_box(id);
+        });
+    });
+    drop(manual);
+    let _ = std::fs::remove_file(&manual_path);
+
+    let always_path = temp_path("sync_always");
+    let mut always =
+        Db::open_with(&always_path, DbOptions::new().sync(SyncPolicy::Always)).expect("open");
+    let mut i = 0_i64;
+    group.bench_function("always", |b| {
+        b.iter(|| {
+            let id = always.insert(small_doc(black_box(i))).expect("insert");
+            i += 1;
+            black_box(id);
+        });
+    });
+    drop(always);
+    let _ = std::fs::remove_file(&always_path);
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_insert,
+    bench_get,
+    bench_update,
+    bench_find,
+    bench_durability
+);
 criterion_main!(benches);

@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). Schemaless documents. Single-file storage. Crash-safe, embedded, zero-network.
     </p>
     <blockquote>
-        <strong>Status: pre-1.0, in active development.</strong> As of <code>v0.2.0</code> the document model and the single-file store are implemented: insert, read, overwrite, and delete documents by id, with checksummed records and replay-based crash recovery. Secondary indexes, field/range queries, and full write-ahead-log durability land across the remaining 0.x series per <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>. The public API is frozen at <code>1.0.0</code>.
+        <strong>Status: pre-1.0, in active development.</strong> As of <code>v0.4.0</code> the document model, the single-file store, secondary indexes with field and range queries, and a configurable durability policy are all implemented, and the <a href="./docs/FORMAT.md">on-disk format is frozen</a> (version 1). The remaining 0.x work is hardening and benchmarking toward a stable <code>1.0.0</code>, per <a href="./dev/ROADMAP.md"><code>dev/ROADMAP.md</code></a>. The public API is frozen at <code>1.0.0</code>.
     </blockquote>
 </div>
 
@@ -38,20 +38,22 @@
 
 <h2>What it does</h2>
 
-Available now (`v0.3.0`):
+Available now (`v0.4.0`):
 
 - **Schemaless documents** &mdash; store nested, JSON-like documents with no fixed schema, built from a small, typed [`Value`](./docs/API.md#value) model
 - **Single-file storage** &mdash; the whole database is one file: trivial to ship, copy, and back up
 - **Crash-safe writes** &mdash; every record is length-framed and CRC-32C checked; a write torn by a crash is detected and dropped on the next open, never silently misread
+- **Configurable durability** &mdash; `fsync` on every write, or batch and sync on `flush`; either way the file is never left corrupt
+- **Frozen on-disk format** &mdash; the [format](./docs/FORMAT.md) is stable (version 1); files written by 0.2.0 onward stay readable
 - **Embedded, zero-network** &mdash; runs in-process; no server, no daemon, no external services
 - **Point operations** &mdash; `insert`, `get`, `update`, and `delete` documents by id, plus `flush` for durability
 - **Secondary indexes** &mdash; index any number of document fields; queries also work without an index, so an index is a pure speedup
 - **Field and range queries** &mdash; `find` by an exact field value, `range` over an ordered field
 - **Optional `serde`** &mdash; move documents in and out of JSON, MessagePack, or any serde format
 
-On the roadmap (`v0.4.0`+, see [`dev/ROADMAP.md`](./dev/ROADMAP.md)):
+On the roadmap (`v0.5.0`+, see [`dev/ROADMAP.md`](./dev/ROADMAP.md)):
 
-- **Write-ahead log** &mdash; group-commit durability and a frozen on-disk format
+- **Concurrency** &mdash; safe shared access patterns for multi-threaded workloads
 - **Compaction** &mdash; reclaim space held by superseded and deleted records
 
 <br>
@@ -62,10 +64,10 @@ On the roadmap (`v0.4.0`+, see [`dev/ROADMAP.md`](./dev/ROADMAP.md)):
 
 ```toml
 [dependencies]
-bison-db = "0.3"
+bison-db = "0.4"
 
 # With serde support for the document model:
-bison-db = { version = "0.3", features = ["serde"] }
+bison-db = { version = "0.4", features = ["serde"] }
 ```
 
 <br>
@@ -96,11 +98,12 @@ fn main() -> bison_db::Result<()> {
 }
 ```
 
-More runnable programs live in [`examples/`](./examples): `quick_start`, `user_profiles` (CRUD with nested documents), `secondary_indexes`, `crash_recovery`, and `json_interop`.
+More runnable programs live in [`examples/`](./examples): `quick_start`, `user_profiles` (CRUD with nested documents), `secondary_indexes`, `durability`, `crash_recovery`, and `json_interop`.
 
 ```bash
 cargo run --example user_profiles
 cargo run --example secondary_indexes
+cargo run --example durability
 cargo run --example crash_recovery
 cargo run --example json_interop --features serde
 ```
@@ -142,11 +145,37 @@ fn main() -> bison_db::Result<()> {
 
 <br>
 
+## Durability
+
+Choose how durable writes are when you open the store. The default,
+`SyncPolicy::Manual`, is fastest: writes are crash-safe (a torn write is never
+misread), but a power loss can lose the most recent writes that were never
+flushed. `SyncPolicy::Always` `fsync`s after every write, so each one is durable
+the moment it returns.
+
+```rust
+use bison_db::{Db, DbOptions, Document, SyncPolicy};
+
+fn main() -> bison_db::Result<()> {
+    // Durable per write — every insert/update/delete fsyncs before returning.
+    let mut db = Db::open_with("ledger.bison", DbOptions::new().sync(SyncPolicy::Always))?;
+    db.insert({ let mut d = Document::new(); d.set("entry", "debit 100"); d })?;
+    // No explicit flush needed under Always.
+    Ok(())
+}
+```
+
+Either way the file is never left corrupt: every record is CRC-checked, a crash
+torn write at the tail is truncated on the next open, and the [on-disk
+format](./docs/FORMAT.md) is frozen and versioned. See [`docs/FORMAT.md`](./docs/FORMAT.md) for the byte-level layout.
+
+<br>
+
 ## API Overview
 
 For the complete reference, see [`docs/API.md`](./docs/API.md).
 
-- [`Db`](./docs/API.md#db) &mdash; open the store; `insert` / `get` / `update` / `delete` / `flush`; `create_index` / `find` / `range`
+- [`Db`](./docs/API.md#db) / [`DbOptions`](./docs/API.md#dboptions) &mdash; open the store (with a durability policy); `insert` / `get` / `update` / `delete` / `flush`; `create_index` / `find` / `range`
 - [`Document`](./docs/API.md#document) &mdash; the ordered, schemaless record you store
 - [`Value`](./docs/API.md#value) &mdash; a field's content: null, bool, int, float, string, bytes, array, or nested document
 - [`DocId`](./docs/API.md#docid) &mdash; a document's stable primary key
