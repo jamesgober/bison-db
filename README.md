@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). Schemaless documents. Single-file storage. Crash-safe, embedded, zero-network.
     </p>
     <blockquote>
-        <strong>Status: pre-1.0 (alpha), API frozen.</strong> As of <code>v0.6.0</code> the document model, the single-file store, secondary indexes with field and range queries, a configurable durability policy, and space-reclaiming compaction are all implemented and hardened with fuzz-tested parse/recovery paths; the <a href="./docs/FORMAT.md">on-disk format is frozen</a> (version 1) and the <a href="./dev/ROADMAP.md">public API is frozen</a> (additive-only until 1.0). The remaining work is beta hardening and final benchmarks toward a stable <code>1.0.0</code>.
+        <strong>Status: pre-1.0 (beta), API frozen.</strong> As of <code>v0.7.0</code> the document model, the single-file store, secondary indexes with field and range queries, a configurable durability policy, and space-reclaiming compaction are all implemented and hardened with fuzz-tested parse/recovery paths and a randomized soak test; the <a href="./docs/FORMAT.md">on-disk format is frozen</a> (version 1) and the <a href="./dev/ROADMAP.md">public API is frozen</a> (additive-only until 1.0). The remaining work is a controlled head-to-head benchmark and a final soak toward a stable <code>1.0.0</code>.
     </blockquote>
 </div>
 
@@ -66,10 +66,10 @@ On the roadmap (`v0.6.0` &rarr; `1.0.0`, see [`dev/ROADMAP.md`](./dev/ROADMAP.md
 
 ```toml
 [dependencies]
-bison-db = "0.6"
+bison-db = "0.7"
 
 # With serde support for the document model:
-bison-db = { version = "0.6", features = ["serde"] }
+bison-db = { version = "0.7", features = ["serde"] }
 ```
 
 <br>

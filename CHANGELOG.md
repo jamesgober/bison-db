@@ -10,6 +10,24 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-08
+
+Beta soak testing. More confidence on top of the frozen API and format: a
+randomized stress test, error-path coverage, and a written competitive analysis.
+
+### Added
+
+- `tests/stress.rs`: a seeded stress/soak test driving thousands of randomized
+  mixed operations (insert, update, delete, read-back, compaction, and
+  close-and-reopen) against an in-memory reference model, verifying the store —
+  and its secondary index — match the model throughout.
+- Error-path tests: an oversized value is rejected with `ValueTooLarge` and
+  leaves the store unchanged (no consumed id); compaction preserves the store's
+  `SyncPolicy`.
+- `docs/PERFORMANCE.md`: a "How it compares" section laying out the architectural
+  case against networked document databases, and a "Correctness under load"
+  note documenting the soak test.
+
 ## [0.6.0] - 2026-06-08
 
 Alpha hardening. The API and on-disk format were frozen in 0.4.0/0.5.0, so this
@@ -164,7 +182,8 @@ Initial scaffold and repository bootstrap. No domain logic yet &mdash; this rele
 - `.github/workflows/ci.yml` (Node 24 actions; fmt, clippy, test, doc, audit, deny) and `.github/FUNDING.yml`.
 
 <!-- LINKS -->
-[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/jamesgober/bison-db/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jamesgober/bison-db/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jamesgober/bison-db/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jamesgober/bison-db/compare/v0.3.0...v0.4.0

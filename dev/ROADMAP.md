@@ -99,10 +99,23 @@ confidence, not features.
 
 ---
 
-## v0.7.0 -> v1.0.0 -- Beta / RC / Stable
+## v0.7.0 -- Beta: soak testing (DONE)
 
-Integrate against real consumers, broaden testing further, capture final
-head-to-head benchmarks, then publish 1.0 with the API and format frozen here.
+- Seeded stress/soak test driving thousands of randomized mixed operations
+  (insert/update/delete/read/compact/reopen) against an in-memory model, with
+  secondary-index parity checked throughout.
+- Error-path coverage: oversized-value rejection leaves the store unchanged;
+  compaction preserves the sync policy.
+- Architectural competitive analysis recorded in `docs/PERFORMANCE.md` (the
+  controlled peer head-to-head is deferred to the RC, to avoid a heavy benchmark
+  dependency in the library).
+
+---
+
+## v0.8.0 -> v1.0.0 -- RC / Stable
+
+Controlled head-to-head benchmark against peer engines, real-consumer
+integration, a final soak, then publish 1.0 with the API and format frozen here.
 
 ---
 

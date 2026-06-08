@@ -100,6 +100,44 @@ architecture:
 - **Ordered indexes for ranges.** Secondary indexes are B-trees keyed by a total
   order over `Value`, so a range query is a contiguous, already-sorted walk.
 
+## How it compares
+
+A controlled, populated head-to-head against peer engines (a pure-Rust embedded
+store such as `redb` or `sled`, and a document database such as MongoDB) is
+planned for the release-candidate cycle, where it can be set up fairly and
+without adding a heavy benchmark dependency to the library itself. Until then,
+this is the honest **architectural** comparison.
+
+The decisive factor is not micro-optimization — it is *where the work runs*. A
+server document database (MongoDB and the like) answers a query over a network
+socket: the request is serialized, sent over a connection, parsed by a separate
+process, executed, and the result serialized back. Even on localhost, that round
+trip is measured in **hundreds of microseconds to milliseconds**, dominated by
+the network stack and cross-process serialization, before any indexing work.
+
+bison-db has none of that. A read is a function call: one in-memory index lookup
+and one positional file read, measured here at **~0.36 µs**. There is no socket,
+no wire protocol, no second process. For the workloads bison-db targets —
+in-process storage for a single application — this is a structural advantage of
+roughly **three orders of magnitude on point operations**, not a tuning margin
+that a competitor closes with a faster release.
+
+The trade-off is honest and explicit: bison-db is *embedded* and *single-process*
+by design (see [Out of scope](../dev/ROADMAP.md)). It does not replace a
+networked database for multi-client, multi-host deployments — it removes the
+network entirely for the cases that do not need it. When your data lives in the
+same process as your code, paying a network round trip to reach it is the cost
+worth eliminating.
+
+## Correctness under load
+
+Performance claims are only meaningful if the store stays correct while it runs.
+A seeded **stress/soak test** (`tests/stress.rs`) drives thousands of randomized
+mixed operations — insert, update, delete, read-back, compaction, and
+close-and-reopen — against an in-memory reference model, checking that the store
+matches the model throughout, including the secondary index. It runs as part of
+the normal test suite on every platform.
+
 ## Honesty notes
 
 - These are **0.x baselines** captured during development, not a certified

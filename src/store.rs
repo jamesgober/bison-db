@@ -1730,6 +1730,44 @@ mod tests {
     }
 
     #[test]
+    fn test_compact_preserves_sync_policy_and_data() {
+        let path = temp_path();
+        let mut db = Db::open_with(&path, DbOptions::new().sync(SyncPolicy::Always)).unwrap();
+        let id = db.insert(doc(&[("v", 1)])).unwrap();
+        for n in 2..50 {
+            db.update(id, doc(&[("v", n)])).unwrap();
+        }
+        db.compact().unwrap();
+        assert_eq!(db.sync_policy(), SyncPolicy::Always);
+        assert_eq!(
+            db.get(id)
+                .unwrap()
+                .unwrap()
+                .get("v")
+                .and_then(Value::as_int),
+            Some(49)
+        );
+        // Still writable, still durable-per-write, after the swap.
+        let id2 = db.insert(doc(&[("w", 7)])).unwrap();
+        assert!(db.get(id2).unwrap().is_some());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_value_too_large_is_rejected_and_leaves_db_unchanged() {
+        let path = temp_path();
+        let mut db = Db::open(&path).unwrap();
+        let mut big = Document::new();
+        big.set("blob", Value::Bytes(vec![0u8; MAX_RECORD_BYTES + 1]));
+        assert!(matches!(db.insert(big), Err(Error::ValueTooLarge)));
+        // The failed insert must not have advanced state.
+        assert_eq!(db.len(), 0);
+        let id = db.insert(doc(&[("ok", 1)])).unwrap();
+        assert_eq!(id.get(), 1, "a rejected insert must not consume an id");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn test_open_removes_stale_compacting_temp() {
         let path = temp_path();
         {
