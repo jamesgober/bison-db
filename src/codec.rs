@@ -350,4 +350,33 @@ mod tests {
         buf.extend_from_slice(&u32::MAX.to_le_bytes());
         assert!(matches!(decode_document(&buf), Err(Error::Corrupt(_))));
     }
+
+    proptest::proptest! {
+        /// The decoder must terminate with `Ok` or `Err` on *any* input — never
+        /// panic, over-read, or allocate unbounded — since on-disk bytes are
+        /// untrusted after corruption. This is the in-tree fuzz of the parse path.
+        #[test]
+        fn prop_decode_arbitrary_bytes_never_panics(
+            bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512),
+        ) {
+            let _ = decode_document(&bytes);
+        }
+
+        /// Encoding a real document and decoding it back is always lossless, and
+        /// decoding any single-byte truncation of that encoding never panics.
+        #[test]
+        fn prop_truncations_of_valid_encoding_never_panic(
+            key in "[a-z]{1,6}",
+            n in proptest::prelude::any::<i64>(),
+        ) {
+            let mut doc = Document::new();
+            doc.set(key, n);
+            let mut buf = Vec::new();
+            encode_document_into(&mut buf, &doc).unwrap();
+            for cut in 0..buf.len() {
+                let _ = decode_document(&buf[..cut]);
+            }
+            proptest::prop_assert_eq!(decode_document(&buf).unwrap(), doc);
+        }
+    }
 }

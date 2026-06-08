@@ -86,9 +86,23 @@ Exit criteria:
 
 ---
 
-## v0.6.0 -> v1.0.0 -- Alpha / Beta / RC / Stable
+## v0.6.0 -- Alpha: hardening (DONE)
 
-Integrate against real consumers, broaden testing, capture final benchmarks, then freeze the public API until 2.0 and publish.
+API and format are already frozen (v0.4.0 / v0.5.0), so this phase is about
+confidence, not features.
+
+- In-tree fuzzing of the parse/recovery paths: property tests proving the decoder
+  and `Db::open` never panic on arbitrary, corrupted, or truncated input.
+- Captured benchmarks with method and environment recorded in `docs/PERFORMANCE.md`.
+- A realistic example (`session_store`) exercising indexed lookups, per-write
+  durability, and compaction together.
+
+---
+
+## v0.7.0 -> v1.0.0 -- Beta / RC / Stable
+
+Integrate against real consumers, broaden testing further, capture final
+head-to-head benchmarks, then publish 1.0 with the API and format frozen here.
 
 ---
 

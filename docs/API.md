@@ -9,14 +9,16 @@
         <span>&nbsp;│&nbsp;</span>
         <span>API</span>
         <span>&nbsp;│&nbsp;</span>
-        <a href="../CHANGELOG.md" title="Changelog"><b>CHANGELOG</b></a>
+        <a href="./FORMAT.md" title="On-disk Format"><b>FORMAT</b></a>
         <span>&nbsp;│&nbsp;</span>
-        <a href="../dev/ROADMAP.md" title="Roadmap"><b>ROADMAP</b></a>
+        <a href="./PERFORMANCE.md" title="Performance"><b>PERFORMANCE</b></a>
+        <span>&nbsp;│&nbsp;</span>
+        <a href="../CHANGELOG.md" title="Changelog"><b>CHANGELOG</b></a>
     </sup>
 </div>
 <br>
 
-> Complete reference for every public item in `bison-db` as of `v0.5.0`, with runnable examples.
+> Complete reference for every public item in `bison-db` as of `v0.6.0`, with runnable examples.
 > The crate is pre-1.0: the surface grows across the 0.x series (see [`dev/ROADMAP.md`](../dev/ROADMAP.md)) and is frozen at `1.0.0`. Items marked _(planned)_ are not yet implemented.
 
 ## Table of Contents
@@ -46,10 +48,10 @@
 
 ```toml
 [dependencies]
-bison-db = "0.5"
+bison-db = "0.6"
 
 # Enable serde for the document model:
-bison-db = { version = "0.5", features = ["serde"] }
+bison-db = { version = "0.6", features = ["serde"] }
 ```
 
 The default `std` feature provides the file-backed [`Db`]. Disabling it
@@ -939,8 +941,10 @@ breaking change before then. The items below are **not yet implemented** and are
 listed so integrators can see the intended direction; tracked in
 [`dev/ROADMAP.md`](../dev/ROADMAP.md).
 
-- **Hardening toward 1.0** _(v0.6.0 → 1.0)_ — real-consumer integration, broader
-  testing, and final benchmarks.
+- **Beta hardening toward 1.0** _(v0.7.0 → 1.0)_ — real-consumer integration,
+  broader testing, and a populated head-to-head benchmark. (v0.6.0 added in-tree
+  fuzzing of the parse/recovery paths and captured baseline benchmarks; see
+  [`docs/PERFORMANCE.md`](./PERFORMANCE.md).)
 - **Persistent / lazily-rebuilt indexes** _(post-1.0)_ — avoid re-declaring
   indexes after reopening a store, via a sidecar file that does not change the
   frozen main format.

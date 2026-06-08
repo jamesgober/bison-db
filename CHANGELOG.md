@@ -10,6 +10,27 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-08
+
+Alpha hardening. The API and on-disk format were frozen in 0.4.0/0.5.0, so this
+release adds confidence rather than features: fuzz-tested parse/recovery paths,
+captured benchmarks, and a realistic example.
+
+### Added
+
+- In-tree fuzzing of the parse path: property tests proving the document decoder
+  and `Db::open` never panic, over-read, or hang on arbitrary, corrupted, or
+  truncated input (`tests/robustness.rs` and codec property tests).
+- `docs/PERFORMANCE.md`: benchmark results with the method, environment, and the
+  durability cost, all reproducible with `cargo bench`.
+- `session_store` example: an embedded web-session store using an indexed
+  `user_id` for "log out everywhere", per-write durability, and compaction.
+
+### Changed
+
+- Refreshed the README performance table with measured medians and linked the
+  full performance write-up.
+
 ## [0.5.0] - 2026-06-08
 
 Space-reclaiming compaction, a defined concurrency model, and the **public API
@@ -143,7 +164,8 @@ Initial scaffold and repository bootstrap. No domain logic yet &mdash; this rele
 - `.github/workflows/ci.yml` (Node 24 actions; fmt, clippy, test, doc, audit, deny) and `.github/FUNDING.yml`.
 
 <!-- LINKS -->
-[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/jamesgober/bison-db/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/jamesgober/bison-db/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jamesgober/bison-db/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jamesgober/bison-db/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jamesgober/bison-db/compare/v0.2.0...v0.3.0

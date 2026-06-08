@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). Schemaless documents. Single-file storage. Crash-safe, embedded, zero-network.
     </p>
     <blockquote>
-        <strong>Status: pre-1.0, API frozen.</strong> As of <code>v0.5.0</code> the document model, the single-file store, secondary indexes with field and range queries, a configurable durability policy, and space-reclaiming compaction are all implemented; the <a href="./docs/FORMAT.md">on-disk format is frozen</a> (version 1) and the <a href="./dev/ROADMAP.md">public API is frozen</a> (additive-only until 1.0). The remaining 0.x work is hardening and benchmarking toward a stable <code>1.0.0</code>.
+        <strong>Status: pre-1.0 (alpha), API frozen.</strong> As of <code>v0.6.0</code> the document model, the single-file store, secondary indexes with field and range queries, a configurable durability policy, and space-reclaiming compaction are all implemented and hardened with fuzz-tested parse/recovery paths; the <a href="./docs/FORMAT.md">on-disk format is frozen</a> (version 1) and the <a href="./dev/ROADMAP.md">public API is frozen</a> (additive-only until 1.0). The remaining work is beta hardening and final benchmarks toward a stable <code>1.0.0</code>.
     </blockquote>
 </div>
 
@@ -66,10 +66,10 @@ On the roadmap (`v0.6.0` &rarr; `1.0.0`, see [`dev/ROADMAP.md`](./dev/ROADMAP.md
 
 ```toml
 [dependencies]
-bison-db = "0.5"
+bison-db = "0.6"
 
 # With serde support for the document model:
-bison-db = { version = "0.5", features = ["serde"] }
+bison-db = { version = "0.6", features = ["serde"] }
 ```
 
 <br>
@@ -100,10 +100,10 @@ fn main() -> bison_db::Result<()> {
 }
 ```
 
-More runnable programs live in [`examples/`](./examples): `quick_start`, `user_profiles` (CRUD with nested documents), `secondary_indexes`, `durability`, `compaction`, `crash_recovery`, and `json_interop`.
+More runnable programs live in [`examples/`](./examples): `quick_start`, `user_profiles` (CRUD with nested documents), `secondary_indexes`, `durability`, `compaction`, `session_store` (a realistic indexed store), `crash_recovery`, and `json_interop`.
 
 ```bash
-cargo run --example user_profiles
+cargo run --example session_store
 cargo run --example secondary_indexes
 cargo run --example durability
 cargo run --example compaction
@@ -240,13 +240,13 @@ For the complete reference, see [`docs/API.md`](./docs/API.md).
 
 | Operation | Time |
 |-----------|------|
-| `insert` a small document | ~0.8 µs |
-| `get` a small document | ~0.3 µs |
-| `update` a small document | ~0.8 µs |
-| `find` by indexed field (in a 10k-doc store) | ~60 ns |
-| `find` by full scan (in a 10k-doc store) | ~1.6 ms |
+| `insert` a small document | ~0.9 µs |
+| `get` a small document | ~0.36 µs |
+| `update` a small document | ~0.6 µs |
+| `find` by indexed field (in a 10k-doc store) | ~65 ns |
+| `find` by full scan (in a 10k-doc store) | ~1.8 ms |
 
-The last two rows are the same query with and without an index — the index turns a full scan into a B-tree point lookup. Numbers are produced by [`benches/bison_bench.rs`](./benches/bison_bench.rs) against a real on-disk store; reproduce them with `cargo bench`. A populated head-to-head comparison against other embedded and document stores is planned for the 1.0 cycle.
+The last two rows are the same query with and without an index — the index turns a full scan into a B-tree point lookup (~27,000× here). Numbers are produced by [`benches/bison_bench.rs`](./benches/bison_bench.rs) against a real on-disk store; reproduce them with `cargo bench`. See [`docs/PERFORMANCE.md`](./docs/PERFORMANCE.md) for the full method, environment, and the durability cost. A populated head-to-head comparison against other embedded and document stores is planned for the 1.0 cycle.
 
 <br>
 <hr>
