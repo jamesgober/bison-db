@@ -28,6 +28,14 @@ randomized stress test, error-path coverage, and a written competitive analysis.
   case against networked document databases, and a "Correctness under load"
   note documenting the soak test.
 
+### Changed
+
+- Dropped the `html_reports` feature from the `criterion` dev-dependency, which
+  removed the `plotters` -> `web-sys` chain (~19 fewer crates resolved). This
+  shrinks the dev dependency tree and the `cargo audit`/`cargo deny` surface, and
+  makes CI lockfile resolution faster and less prone to transient download
+  failures. Benchmarks report to stdout, unchanged.
+
 ## [0.6.0] - 2026-06-08
 
 Alpha hardening. The API and on-disk format were frozen in 0.4.0/0.5.0, so this
