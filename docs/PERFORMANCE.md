@@ -48,6 +48,11 @@ The numbers below were captured on:
 - **Storage:** ext4 on an SSD
 - **Toolchain:** Rust stable 1.95, release profile (`lto = "fat"`, `codegen-units = 1`)
 
+These figures were measured on 1.0. Since 1.1, each `get` also verifies the
+record's CRC-32C, a table-driven pass over the record that adds a little per
+read; open replays the log through a 1 MiB buffer instead of two syscalls per
+record.
+
 Treat them as **indicative** — absolute timings vary with hardware, especially
 `fsync` latency, which is a property of the device, not of bison-db. The
 *relationships* between operations (indexed vs scan, manual vs always) are the
@@ -114,6 +119,13 @@ one durability sync per engine (bison-db `Manual` + one `flush`; redb one write
 transaction committed once — no per-operation `fsync` on either side), then
 100,000 random point reads after a cold reopen. Median of three trials,
 Linux/WSL2, x86_64, Rust 1.95, release.
+
+**The result is platform dependent.** Every bison-db `get` is one positional
+read syscall, and the cost of that syscall varies by operating system and
+filesystem. On Windows (NTFS) the same unmodified harness has measured bison-db
+reads at several times redb's time (about 5.4 µs against 0.73 µs on a loaded
+machine) and inserts slightly slower than redb, so the ratios below hold for
+Linux; measure on your own platform before relying on them.
 
 | Metric | bison-db | redb | Result |
 |--------|---------:|-----:|--------|

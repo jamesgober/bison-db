@@ -49,13 +49,18 @@ fn main() -> bison_db::Result<()> {
 
     // Phase 3: reopen. The torn tail is dropped; the flushed records remain.
     let db = Db::open(&path)?;
-    println!("recovered {} records after reopen", db.len());
+    println!(
+        "recovered {} records after reopen; {} torn bytes removed",
+        db.len(),
+        db.discarded_bytes()
+    );
     for id in ids {
         let present = db.get(id)?.is_some();
         println!("  {id}: {}", if present { "intact" } else { "lost" });
     }
     assert_eq!(db.len(), 3, "all flushed records must survive recovery");
 
+    drop(db);
     let _ = std::fs::remove_file(&path);
     Ok(())
 }

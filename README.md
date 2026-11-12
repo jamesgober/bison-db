@@ -21,7 +21,7 @@
         <strong>bison-db</strong> is an <b>embedded, document-oriented database</b> for Rust: store, index, and query <b>schemaless documents</b> entirely in-process, with no server, no network, and no external services. It is the document-store counterpart to an embedded key-value store, giving you rich nested records and secondary indexes linked directly into your binary.
     </p>
     <p>
-        It is built for <b>durability</b> and <b>speed</b>: <b>ACID</b> writes through a write-ahead log, <b>single-file storage</b> that is trivial to ship and back up, and <b>secondary indexes</b> for fast queries over document fields. <code>bison-db</code> is the first member of the <b>Bison</b> family of embedded databases.
+        It is built for <b>durability</b> and <b>speed</b>: <b>crash-safe</b> writes appended to a checksummed log, each one atomic on its own, <b>single-file storage</b> that is trivial to ship and back up, and <b>secondary indexes</b> for fast queries over document fields. <code>bison-db</code> is the first member of the <b>Bison</b> family of embedded databases.
     </p>
     <br>
     <hr>
@@ -29,7 +29,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). Schemaless documents. Single-file storage. Crash-safe, embedded, zero-network.
     </p>
     <blockquote>
-        <strong>Status: stable (<code>1.0.0</code>).</strong> The document model, the single-file store, secondary indexes with field and range queries, a configurable durability policy, and space-reclaiming compaction are all implemented; hardened with fuzz-tested parse/recovery paths, a randomized soak test, and a sustained-load concurrency soak; and <a href="./docs/PERFORMANCE.md">benchmarked head-to-head</a> against a peer engine. The <a href="./docs/FORMAT.md">on-disk format</a> (version 1) and the <a href="./docs/API.md">public API</a> are a stability commitment: no breaking change until 2.0, per semantic versioning.
+        <strong>Status: stable (<code>1.1.0</code>).</strong> The document model, the single-file store, secondary indexes with field and range queries, a configurable durability policy, and space-reclaiming compaction are all implemented; hardened with property-tested (proptest) parse/recovery paths, failure-path regression tests, a randomized soak test, and a sustained-load concurrency soak; and <a href="./docs/PERFORMANCE.md">benchmarked head-to-head</a> against a peer engine. The <a href="./docs/FORMAT.md">on-disk format</a> (version 1) and the <a href="./docs/API.md">public API</a> are a stability commitment: no breaking change until 2.0, per semantic versioning.
     </blockquote>
 </div>
 
@@ -38,20 +38,21 @@
 
 <h2>What it does</h2>
 
-Available now (`v0.4.0`):
+Available now (`v1.1`):
 
-- **Schemaless documents** &mdash; store nested, JSON-like documents with no fixed schema, built from a small, typed [`Value`](./docs/API.md#value) model
-- **Single-file storage** &mdash; the whole database is one file: trivial to ship, copy, and back up
-- **Crash-safe writes** &mdash; every record is length-framed and CRC-32C checked; a write torn by a crash is detected and dropped on the next open, never silently misread
-- **Configurable durability** &mdash; `fsync` on every write, or batch and sync on `flush`; either way the file is never left corrupt
-- **Compaction** &mdash; `compact` reclaims the space left by overwrites and deletes via a crash-safe atomic file swap
-- **Concurrency** &mdash; single-writer, multi-reader; `Db` is `Send + Sync`, so share it across threads behind an `Arc<RwLock<Db>>`
-- **Frozen on-disk format** &mdash; the [format](./docs/FORMAT.md) is stable (version 1); files written by 0.2.0 onward stay readable
-- **Embedded, zero-network** &mdash; runs in-process; no server, no daemon, no external services
-- **Point operations** &mdash; `insert`, `get`, `update`, and `delete` documents by id, plus `flush` for durability
-- **Secondary indexes** &mdash; index any number of document fields; queries also work without an index, so an index is a pure speedup
-- **Field and range queries** &mdash; `find` by an exact field value, `range` over an ordered field
-- **Optional `serde`** &mdash; move documents in and out of JSON, MessagePack, or any serde format
+- **Schemaless documents**: store nested, JSON-like documents with no fixed schema, built from a small, typed [`Value`](./docs/API.md#value) model
+- **Single-file storage**: the whole database is one data file, trivial to ship, copy, and back up (a small `.lock` file sits beside it while it is open)
+- **Crash-safe writes**: every record is length-framed and CRC-32C checked; a write torn by a crash is detected and dropped on the next open, never silently misread. Damage anywhere else is reported, not cut away, and an explicit salvage mode recovers what still verifies
+- **Configurable durability**: `fsync` on every write, or batch and sync on `flush`; either way a crash cannot damage records that were already synced
+- **Compaction**: `compact` reclaims the space left by overwrites and deletes via a crash-safe atomic file swap
+- **Concurrency**: single-writer, multi-reader; `Db` is `Send + Sync`, so share it across threads behind an `Arc<RwLock<Db>>`. One handle per file, enforced by a lock: a second open, from any process, is refused
+- **Bounded input**: documented limits on record size, fields per document, and nesting depth, so hostile files and serde input cost time and memory in proportion to their size
+- **Frozen on-disk format**: the [format](./docs/FORMAT.md) is stable (version 1); files written by 0.2.0 onward stay readable
+- **Embedded, zero-network**: runs in-process; no server, no daemon, no external services
+- **Point operations**: `insert`, `get`, `update`, and `delete` documents by id, plus `flush` for durability
+- **Secondary indexes**: index any number of document fields; queries also work without an index, so an index is a pure speedup
+- **Field and range queries**: `find` by an exact field value, `range` over an ordered field
+- **Optional `serde`**: move documents in and out of JSON, MessagePack, or any serde format
 
 Possible future directions (post-1.0, additive only — the 1.0 API and format do not change):
 
@@ -66,10 +67,10 @@ Possible future directions (post-1.0, additive only — the 1.0 API and format d
 
 ```toml
 [dependencies]
-bison-db = "1.0"
+bison-db = "1.1"
 
 # With serde support for the document model:
-bison-db = { version = "1.0", features = ["serde"] }
+bison-db = { version = "1.1", features = ["serde"] }
 ```
 
 <br>
@@ -168,9 +169,14 @@ fn main() -> bison_db::Result<()> {
 }
 ```
 
-Either way the file is never left corrupt: every record is CRC-checked, a crash
-torn write at the tail is truncated on the next open, and the [on-disk
-format](./docs/FORMAT.md) is frozen and versioned. See [`docs/FORMAT.md`](./docs/FORMAT.md) for the byte-level layout.
+Either way a crash cannot damage records that were already synced: every record
+is CRC-checked, a write torn by a crash at the end of the file is cut off on the
+next open (`Db::discarded_bytes` reports how much), and the [on-disk
+format](./docs/FORMAT.md) is frozen and versioned. Damage anywhere before the end
+is not a crash artifact, so `open` reports it as `Error::Corrupt` and leaves the
+file alone. To open such a file anyway, `DbOptions::recovery(RecoveryMode::Salvage)`
+keeps every record that still verifies, after saving a copy of the damaged file
+beside it. See [`docs/FORMAT.md`](./docs/FORMAT.md) for the byte-level layout.
 
 <br>
 
@@ -199,6 +205,13 @@ let after = db.stats().file_bytes; // smaller, with the same live data
 reads take `&self`, writes take `&mut self`. `Db` is `Send + Sync`, so the
 idiomatic way to share one across threads is an `Arc<RwLock<Db>>` — many readers
 concurrently, or one exclusive writer.
+
+Only one handle may have a store open at a time. `Db::open` takes an exclusive
+lock (a sibling `<path>.lock` file) and a second open, from the same process or
+another one, fails with `Error::Locked`. Run one writer process per store. On
+Windows and Linux a lock left by a crashed process is cleared automatically; on
+macOS and the BSDs, delete the `.lock` file by hand once no process is using the
+store.
 
 ```rust
 use std::sync::{Arc, RwLock};
@@ -248,7 +261,7 @@ For the complete reference, see [`docs/API.md`](./docs/API.md).
 
 The last two rows are the same query with and without an index — the index turns a full scan into a B-tree point lookup (~27,000× here). Numbers are produced by [`benches/bison_bench.rs`](./benches/bison_bench.rs) against a real on-disk store; reproduce them with `cargo bench`.
 
-In a controlled head-to-head against [`redb`](https://github.com/cberner/redb) (a pure-Rust ACID embedded engine), bison-db is **~1.85× faster on bulk inserts** and **~35% smaller on disk**, while redb is **~1.3× faster on point reads** — an honest split, with bison-db carrying a richer document model on top. See [`docs/PERFORMANCE.md`](./docs/PERFORMANCE.md) for the full method, environment, durability cost, and the reproducible harness in [`benchmarks/`](./benchmarks).
+In a controlled head-to-head against [`redb`](https://github.com/cberner/redb) (a pure-Rust ACID embedded engine) on Linux (WSL2, ext4), bison-db is **~1.85× faster on bulk inserts** and **~35% smaller on disk**, while redb is **~1.3× faster on point reads**, with bison-db carrying a richer document model on top. The comparison is platform dependent: each bison-db `get` is one positional read syscall, and on Windows that syscall dominates, so there the same harness has measured redb (memory-mapped) several times faster on reads. The figures above are from 1.0; since 1.1 every `get` also verifies the record's checksum. See [`docs/PERFORMANCE.md`](./docs/PERFORMANCE.md) for the full method, environment, durability cost, and the reproducible harness in [`benchmarks/`](./benchmarks).
 
 <br>
 <hr>
@@ -256,12 +269,13 @@ In a controlled head-to-head against [`redb`](https://github.com/cberner/redb) (
 
 ## Where It Fits
 
-`bison-db` composes the storage primitives into a document store. It builds on:
+`bison-db` is self-contained: it has no runtime dependencies, and its log, indexes and codec are its own. Related storage crates by the same author:
 
-- [`wal-db`](https://github.com/jamesgober/wal-db) &mdash; durable write-ahead logging and crash recovery
-- [`index-db`](https://github.com/jamesgober/index-db) &mdash; B+tree secondary indexes over document fields
-- [`page-db`](https://github.com/jamesgober/page-db) &mdash; fixed-size paged storage substrate
-- applications &mdash; any Rust app needing a local document store with no server
+- [`wal-db`](https://github.com/jamesgober/wal-db): a write-ahead log
+- [`index-db`](https://github.com/jamesgober/index-db): an in-memory B+tree
+- [`page-db`](https://github.com/jamesgober/page-db): a fixed-size paged storage substrate
+
+It serves any Rust application that needs a local document store with no server.
 
 It is the first crate in the Bison embedded-database family.
 

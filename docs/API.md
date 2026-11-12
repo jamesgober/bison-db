@@ -51,7 +51,7 @@
 bison-db = "1.0"
 
 # Enable serde for the document model:
-bison-db = { version = "1.0", features = ["serde"] }
+bison-db = { version = "1.1", features = ["serde"] }
 ```
 
 The default `std` feature provides the file-backed [`Db`]. Disabling it
@@ -143,7 +143,8 @@ No public method panics on invalid input or hostile data; failures are values.
 The single-file document store. Open one with [`Db::open`], then operate on
 documents by [`DocId`]. Reads take `&self` and writes take `&mut self`, so the
 compiler enforces single-writer access; to share a store across threads, place
-it behind your own lock.
+it behind your own lock. Only one handle may have a file open at a time, across
+all processes (see [Concurrency](#concurrency)).
 
 Requires the `std` feature (on by default).
 
@@ -160,13 +161,23 @@ replaying any existing records to rebuild the in-memory index.
 
 On open the whole log is scanned: each record's CRC-32C is verified and the
 index is rebuilt from the surviving inserts and deletes. A record left
-half-written by a crash — detectable because it runs past the end of the file or
-fails its checksum at the tail — is truncated away. A checksum failure on a
-record that is **not** at the tail is reported as [`Error::Corrupt`].
+half-written by a crash, at the very end of the file, is cut off; the number of
+bytes removed is reported by `Db::discarded_bytes`. Damage **before** the end (a
+checksum failure, or a damaged length with intact records after it) is reported
+as [`Error::Corrupt`] and the file is left exactly as it was. To open such a file
+anyway, use [`RecoveryMode::Salvage`](#dboptions).
 
-**Errors:** [`Error::Io`] (cannot open/read), [`Error::BadMagic`] (not a bison-db
-file), [`Error::UnsupportedVersion`] (newer format), [`Error::Corrupt`] (a
-non-tail record failed verification).
+Open takes an exclusive lock on the store, held until the handle is dropped. It
+lives in a sibling file, `<path>.lock`: on Windows an unshared handle that the OS
+releases when the process exits; on Unix a file naming the holder's process id
+and start time. On Linux a lock whose holder no longer exists is replaced
+automatically; on other Unix systems a lock left by a crashed process must be
+deleted by hand once no process is using the store.
+
+**Errors:** [`Error::Locked`] (open in another handle), [`Error::Io`] (cannot
+open/read), [`Error::BadMagic`] (not a bison-db file),
+[`Error::UnsupportedVersion`] (newer format), [`Error::Corrupt`] (a record before
+the end of the log failed verification).
 
 ```rust
 use bison_db::Db;
@@ -196,8 +207,11 @@ is readable immediately and durable after the next [`flush`](#dbflush).
 
 - **`doc`** — the document to store; consumed by the call.
 
-**Errors:** [`Error::ValueTooLarge`] if the encoded document exceeds
-[`MAX_RECORD_BYTES`](#max-record-bytes); [`Error::Io`] if the append fails.
+**Errors:** [`Error::ValueTooLarge`] if the document exceeds one of the
+[limits](#limits); [`Error::Io`] if the append fails. A failed insert assigns no
+id and changes nothing. Under `SyncPolicy::Always`, a failed `fsync` makes the
+store refuse further writes until it is reopened, because the state of the disk
+is then unknown.
 
 ```rust
 use bison_db::{Db, Document};
@@ -229,8 +243,8 @@ id (because it was never inserted, or it was deleted).
 
 - **`id`** — the key returned by [`insert`](#dbinsert).
 
-**Errors:** [`Error::Io`] (read failed); [`Error::Corrupt`] (stored bytes failed
-to decode — unexpected given the passing checksum).
+**Errors:** [`Error::Io`] (read failed); [`Error::Corrupt`] (the record failed
+its checksum, which every read verifies, or did not decode).
 
 ```rust
 use bison_db::{Db, Document, DocId};
@@ -351,10 +365,17 @@ in with an **atomic rename**, so a crash at any point leaves either the original
 file or the fully compacted one — never a partial result. A leftover temporary
 from an interrupted compaction is removed on the next [`open`](#dbopen). Document
 ids are preserved, so existing [`DocId`]s and secondary indexes stay valid; only
-the on-disk layout changes.
+the on-disk layout changes. Each record is copied only after its checksum
+verifies, and the id counter is kept, so a deleted id is never reissued.
+
+If the swap fails, `compact` returns the error, removes the temporary file, and
+the handle keeps writing to the original file. On Unix the directory is
+`fsync`ed after the rename, so the compaction is durable on return; on Windows
+the rename is atomic but a power loss right after it can bring back the
+complete pre-compaction file.
 
 **Errors:** [`Error::Io`] if the temporary cannot be written or swapped in;
-[`Error::Corrupt`] if a live record cannot be read back.
+[`Error::Corrupt`] if a live record fails its checksum.
 
 ```rust
 use bison_db::{Db, Document};
@@ -449,6 +470,8 @@ Returns the ids of all live documents whose `field` equals `value`.
 - **`field`** — the field to match on.
 - **`value`** — the exact value to match.
 
+The ids come back in ascending order, with or without an index.
+
 **Errors:** [`Error::Io`] / [`Error::Corrupt`] on the unindexed (scan) path if a
 document cannot be read.
 
@@ -480,8 +503,8 @@ pub fn range<R: RangeBounds<Value>>(&self, field: &str, range: R) -> Result<Vec<
 
 Returns the ids of all live documents whose `field` falls within `range`. Any
 [`RangeBounds`](https://doc.rust-lang.org/std/ops/trait.RangeBounds.html) form
-works: `a..b`, `a..=b`, `..b`, `a..`, `..`. When the field is indexed, matches
-come back ordered by field value (then id).
+works: `a..b`, `a..=b`, `..b`, `a..`, `..`. Matches come back ordered by field
+value, then id, with or without an index.
 
 - **`field`** — the field to range over.
 - **`range`** — inclusive/exclusive bounds as [`Value`]s.
@@ -539,19 +562,39 @@ fn main() -> bison_db::Result<()> {
 
 ### `DbOptions` and `SyncPolicy`
 
-Open a store with a non-default configuration — currently, a durability policy.
+Open a store with a non-default configuration: a durability policy, or a
+recovery mode for damaged files.
 
 ```rust,ignore
 pub enum SyncPolicy { Always, Manual }   // Manual is the default
+
+#[non_exhaustive]
+pub enum RecoveryMode { Strict, Salvage } // Strict is the default
 
 pub struct DbOptions { /* private */ }
 impl DbOptions {
     pub fn new() -> Self;
     pub fn sync(self, policy: SyncPolicy) -> Self;
-    pub fn build_sync_policy(&self) -> SyncPolicy;
+    pub fn recovery(self, mode: RecoveryMode) -> Self;
+    pub fn sync_policy(&self) -> SyncPolicy;
+    pub fn recovery_mode(&self) -> RecoveryMode;
+    #[deprecated(since = "1.1.0")]
+    pub fn build_sync_policy(&self) -> SyncPolicy; // same as sync_policy
     pub fn open<P: AsRef<Path>>(self, path: P) -> Result<Db>;
 }
 ```
+
+`RecoveryMode` decides what `open` does with damage **before** the end of the
+log (a torn final record is always cut off):
+
+| Mode | Damage before the end of the log |
+|------|----------------------------------|
+| `RecoveryMode::Strict` *(default)* | `open` returns `Error::Corrupt`; the file is not changed |
+| `RecoveryMode::Salvage` | each damaged region is skipped up to the next intact record; a byte-for-byte copy of the damaged file is saved as `<path>.damaged` (or `.damaged.1`, ...), then the store is rewritten from what verified |
+
+A salvaged document whose latest record was damaged comes back at an earlier
+version or not at all, so check the result. `Db::discarded_bytes` reports how
+many bytes an open removed.
 
 bison-db never buffers writes in userspace — every write reaches the OS
 immediately and is visible to later reads. `SyncPolicy` controls only when those
@@ -562,8 +605,13 @@ bytes are forced to the physical device with `fsync`:
 | `SyncPolicy::Always` | after every write, before it returns | each write durable immediately; one device sync per op |
 | `SyncPolicy::Manual` *(default)* | on [`Db::flush`], and best-effort on drop | fastest; recent unsynced writes can be lost on power loss |
 
-Under **both** policies the file is never left corrupt: a torn write is detected
-and truncated on the next open (see [Durability and recovery](#durability-and-recovery)).
+Under **both** policies a crash cannot damage records that were already synced:
+a torn write is detected and truncated on the next open (see [Durability and
+recovery](#durability-and-recovery)). Under `Manual`, a crash can lose recent
+unsynced writes out of order; if `open` then reports `Corrupt`, `Salvage`
+recovers every record that reached the disk intact. A failed `fsync` (from
+`flush` or from an `Always` write) makes the store refuse further writes until
+it is reopened.
 
 Open with options through [`DbOptions::open`] or [`Db::open_with`]; read the
 active policy with [`Db::sync_policy`].
@@ -601,9 +649,11 @@ A document's primary key within a [`Db`].
 pub struct DocId(/* private */);
 ```
 
-Ids are assigned by [`Db::insert`] as a dense, monotonically increasing sequence
+Ids are assigned by [`Db::insert`] as a monotonically increasing sequence
 starting at `1`; `0` is never assigned and can serve as a sentinel. An id is
-stable for the life of the document and survives reopening the file. `DocId` is
+never handed out twice, even after its document is deleted, the store is
+compacted, and the file is reopened. An id is stable for the life of the
+document and survives reopening the file. `DocId` is
 `Copy`, `Ord`, and `Hash`, so it works as a map key or in a sorted collection.
 
 | Item | Signature | Description |
@@ -810,6 +860,14 @@ let doc: bison_db::Document = serde_json::from_str(r#"{ "n": 1, "ok": true }"#)?
 let json = serde_json::to_string(&doc)?;
 ```
 
+Some values do not survive a trip through JSON, which has no byte strings,
+non-finite floats, or integers wider than 64 bits: a `Value::Bytes` comes back as
+an `Array` of `Int`s, `NaN` and the infinities come back as `Null`, and a JSON
+integer above `i64::MAX` fails the whole document. Binary formats such as
+MessagePack keep bytes as bytes. Deserialization caps the size hint a format
+reports before reserving memory, and enforces the [limits](#limits) on field
+count and nesting depth.
+
 <br>
 
 <a id="error"></a>
@@ -825,7 +883,8 @@ pub enum Error {
     BadMagic,                    // the file is not a bison-db store
     UnsupportedVersion(u16),     // the file's format is newer than this build
     Corrupt(&'static str),       // a record failed its checksum or structure check
-    ValueTooLarge,               // a value exceeded MAX_RECORD_BYTES
+    ValueTooLarge,               // a document exceeded one of the limits
+    Locked,                      // the store is open in another handle (1.1)
 }
 ```
 
@@ -833,8 +892,10 @@ pub enum Error {
 `Error::Io` carries the originating `std::io::Error`, reachable through the
 standard `source()` chain. A `Corrupt` error always means the bytes on disk did
 not match what the writer produced — never that an in-memory argument was wrong.
-A clean torn write at the very end of the log is recovered silently, not
-reported as `Corrupt` (see [Durability and recovery](#durability-and-recovery)).
+A torn write at the very end of the log is cut off and counted by
+`Db::discarded_bytes`, not reported as `Corrupt` (see [Durability and
+recovery](#durability-and-recovery)). `Locked` means another live handle, in
+this process or another, has the file open.
 
 ```rust
 use bison_db::Error;
@@ -863,6 +924,25 @@ from a damaged file. Requires the `std` feature.
 assert_eq!(bison_db::MAX_RECORD_BYTES, 64 * 1024 * 1024);
 ```
 
+<a id="limits"></a>
+
+### Limits: `MAX_DOCUMENT_FIELDS` and `MAX_NESTING_DEPTH`
+
+```rust,ignore
+pub const MAX_DOCUMENT_FIELDS: usize = 65_536;
+pub const MAX_NESTING_DEPTH: usize = 256;
+```
+
+A document, or an object nested in one, holds at most `MAX_DOCUMENT_FIELDS`
+fields; arrays and objects nest at most `MAX_NESTING_DEPTH` levels (a field
+holding an array is depth 1). Writing a document past either limit, or past
+`MAX_RECORD_BYTES`, fails with [`Error::ValueTooLarge`] and writes nothing. A
+stored record nested deeper is reported as [`Error::Corrupt`]; serde
+deserialization fails past either limit. Decoding is linear in the field count,
+and no decoder reserves memory for more than a small fixed number of elements
+before they arrive, so hostile input costs time and memory in proportion to its
+size. Both constants are available without the `std` feature.
+
 ---
 
 ## Concurrency
@@ -877,6 +957,13 @@ compiler therefore guarantees writes are exclusive.
 [`Arc`]`<`[`RwLock`]`<Db>>`: many threads read concurrently, a writer takes the
 lock exclusively. The single-writer design is inherent to one append-only file —
 there is a single tail — and is the right fit for an embedded store.
+
+**One handle per file.** Each handle caches the tail offset and the id counter,
+so two handles on one file would append over each other. [`Db::open`] therefore
+takes an exclusive lock, and a second open of a live store, from the same
+process or any other, fails with [`Error::Locked`]. Run one writer process per
+store and share its handle. The lock is advisory: it stops other bison-db
+handles, not programs that write the file directly.
 
 ```rust
 use std::sync::{Arc, RwLock};
@@ -915,9 +1002,12 @@ fn main() -> bison_db::Result<()> {
   existence is durable.
 - **No corruption.** A crash never tears a record that was already durable.
   Every record is length-framed and CRC-32C checked. On open, the log is
-  replayed: a partial record at the tail (short read or failing checksum at the
-  end of the file) is truncated; a checksum failure earlier in the file is
-  surfaced as [`Error::Corrupt`] rather than silently misread.
+  replayed: a partial record at the very end of the file is truncated and
+  counted by `Db::discarded_bytes`; damage earlier in the file (a failing
+  checksum, or a damaged length with intact records after it) is surfaced as
+  [`Error::Corrupt`] and the file is not changed. `RecoveryMode::Salvage` opens
+  a damaged file by keeping what still verifies. Every `get` verifies the
+  record's checksum again, so damage after open is reported, not misread.
 - **Frozen, versioned format.** The on-disk layout is **stable as of v0.4.0**
   (format version 1) and specified in [`docs/FORMAT.md`](./FORMAT.md). Files
   written by 0.2.0 onward stay readable; a file written by a newer format is

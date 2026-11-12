@@ -4,6 +4,8 @@
 //! reopen-and-recover, large and nested documents, and the interaction between
 //! inserts, updates, and deletes.
 
+#![cfg(feature = "std")]
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
