@@ -5,8 +5,11 @@
 //! (strings, bytes, arrays, objects) are prefixed with a `u32` length. Fixed
 //! widths keep the encoder and decoder branch-light and let the store read a
 //! field without a separate schema. Every length is validated against the bytes
-//! actually present before anything is allocated, so a corrupt or hostile length
-//! can never drive an out-of-bounds read or an unbounded allocation.
+//! actually present before it is trusted, so a corrupt or hostile length can
+//! never drive an out-of-bounds read. Up-front reservations are capped at a
+//! small constant and at what the remaining bytes could hold, and nesting is
+//! limited to [`MAX_NESTING_DEPTH`], so the memory and stack a decode uses stay
+//! proportional to the record rather than to the lengths it claims.
 //!
 //! The encoding is internal to the store; it is not a stable wire format and is
 //! versioned by the file header (see [`crate::store`]).
@@ -15,7 +18,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::error::{Error, Result};
-use crate::value::{Document, Value};
+use crate::value::{Document, MAX_DOCUMENT_FIELDS, MAX_NESTING_DEPTH, PREALLOC_LIMIT, Value};
+
+/// Smallest encoding of one document field: a `u32` key length, an empty key,
+/// and a one-byte value tag.
+const MIN_FIELD_BYTES: usize = 4 + 1;
 
 /// Tag byte for [`Value::Null`].
 const TAG_NULL: u8 = 0;
@@ -62,8 +69,9 @@ static CRC_TABLE: [u32; 256] = build_crc_table();
 ///
 /// CRC-32C is used over IEEE CRC-32 because it has stronger error detection and
 /// hardware acceleration on common targets; this implementation is the portable
-/// table-driven form. The store stamps this over every record payload and
-/// re-checks it on read, so silent bit-rot is detected rather than misread.
+/// table-driven form. The store stamps this over every record payload, checks
+/// it when the log is replayed on open, and checks it again on every read, so
+/// silent bit-rot is detected rather than misread.
 ///
 /// # Examples
 ///
@@ -86,19 +94,30 @@ pub(crate) fn crc32c(data: &[u8]) -> u32 {
 /// Encodes a document body (its field count and fields) onto the end of `out`.
 ///
 /// Returns [`Error::ValueTooLarge`] if any single length field would not fit in
-/// the `u32` the format reserves for it.
+/// the `u32` the format reserves for it, if a document or nested object has
+/// more than [`MAX_DOCUMENT_FIELDS`] fields, or if arrays and objects nest
+/// deeper than [`MAX_NESTING_DEPTH`].
 pub(crate) fn encode_document_into(out: &mut Vec<u8>, doc: &Document) -> Result<()> {
+    encode_document_at(out, doc, 0)
+}
+
+/// Encodes a document whose enclosing containers number `depth`.
+fn encode_document_at(out: &mut Vec<u8>, doc: &Document, depth: usize) -> Result<()> {
+    if doc.len() > MAX_DOCUMENT_FIELDS {
+        return Err(Error::ValueTooLarge);
+    }
     write_len(out, doc.len())?;
     for (key, value) in doc {
         write_len(out, key.len())?;
         out.extend_from_slice(key.as_bytes());
-        encode_value(out, value)?;
+        encode_value(out, value, depth)?;
     }
     Ok(())
 }
 
-/// Encodes a single value onto the end of `out`.
-fn encode_value(out: &mut Vec<u8>, value: &Value) -> Result<()> {
+/// Encodes a single value onto the end of `out`. `depth` counts the arrays
+/// and objects that enclose it.
+fn encode_value(out: &mut Vec<u8>, value: &Value, depth: usize) -> Result<()> {
     match value {
         Value::Null => out.push(TAG_NULL),
         Value::Bool(b) => {
@@ -124,18 +143,28 @@ fn encode_value(out: &mut Vec<u8>, value: &Value) -> Result<()> {
             out.extend_from_slice(b);
         }
         Value::Array(items) => {
+            let depth = nested(depth).ok_or(Error::ValueTooLarge)?;
             out.push(TAG_ARRAY);
             write_len(out, items.len())?;
             for item in items {
-                encode_value(out, item)?;
+                encode_value(out, item, depth)?;
             }
         }
         Value::Object(doc) => {
+            let depth = nested(depth).ok_or(Error::ValueTooLarge)?;
             out.push(TAG_OBJECT);
-            encode_document_into(out, doc)?;
+            encode_document_at(out, doc, depth)?;
         }
     }
     Ok(())
+}
+
+/// The depth of a container inside `depth` enclosing ones, or `None` past
+/// [`MAX_NESTING_DEPTH`].
+#[inline]
+fn nested(depth: usize) -> Option<usize> {
+    let inner = depth + 1;
+    (inner <= MAX_NESTING_DEPTH).then_some(inner)
 }
 
 /// Writes a length as a little-endian `u32`, rejecting anything that overflows.
@@ -151,30 +180,40 @@ fn write_len(out: &mut Vec<u8>, len: usize) -> Result<()> {
 /// corrupt buffer yields [`Error::Corrupt`] instead of a panic or over-read.
 pub(crate) fn decode_document(bytes: &[u8]) -> Result<Document> {
     let mut reader = Reader::new(bytes);
-    let doc = read_document(&mut reader)?;
+    let doc = read_document(&mut reader, 0)?;
     if reader.remaining() != 0 {
         return Err(Error::Corrupt("trailing bytes after document"));
     }
     Ok(doc)
 }
 
-/// Reads a document body from `reader`.
-fn read_document(reader: &mut Reader<'_>) -> Result<Document> {
+/// Reads a document body from `reader`; `depth` counts the enclosing
+/// containers.
+///
+/// Fields are appended as they decode and duplicate keys (which the encoder
+/// never writes) are collapsed once at the end, so decoding is linear in the
+/// field count.
+fn read_document(reader: &mut Reader<'_>, depth: usize) -> Result<Document> {
     let field_count = reader.read_len()?;
-    let mut doc = Document::with_capacity(field_count.min(reader.remaining()));
+    let reserve = field_count
+        .min(reader.remaining() / MIN_FIELD_BYTES)
+        .min(PREALLOC_LIMIT);
+    let mut doc = Document::with_capacity(reserve);
     for _ in 0..field_count {
         let key_len = reader.read_len()?;
         let key_bytes = reader.take(key_len)?;
         let key = core::str::from_utf8(key_bytes)
             .map_err(|_| Error::Corrupt("invalid utf-8 in field name"))?;
-        let value = read_value(reader)?;
-        let _ = doc.set(String::from(key), value);
+        let value = read_value(reader, depth)?;
+        doc.push_field(String::from(key), value);
     }
+    doc.dedup_last_wins();
     Ok(doc)
 }
 
-/// Reads a single value from `reader`.
-fn read_value(reader: &mut Reader<'_>) -> Result<Value> {
+/// Reads a single value from `reader`; `depth` counts the enclosing
+/// containers.
+fn read_value(reader: &mut Reader<'_>, depth: usize) -> Result<Value> {
     let tag = reader.read_u8()?;
     match tag {
         TAG_NULL => Ok(Value::Null),
@@ -193,14 +232,19 @@ fn read_value(reader: &mut Reader<'_>) -> Result<Value> {
             Ok(Value::Bytes(reader.take(len)?.to_vec()))
         }
         TAG_ARRAY => {
+            let depth = nested(depth).ok_or(Error::Corrupt("nesting too deep"))?;
             let len = reader.read_len()?;
-            let mut items = Vec::with_capacity(len.min(reader.remaining()));
+            // Every element takes at least its one tag byte.
+            let mut items = Vec::with_capacity(len.min(reader.remaining()).min(PREALLOC_LIMIT));
             for _ in 0..len {
-                items.push(read_value(reader)?);
+                items.push(read_value(reader, depth)?);
             }
             Ok(Value::Array(items))
         }
-        TAG_OBJECT => Ok(Value::Object(read_document(reader)?)),
+        TAG_OBJECT => {
+            let depth = nested(depth).ok_or(Error::Corrupt("nesting too deep"))?;
+            Ok(Value::Object(read_document(reader, depth)?))
+        }
         _ => Err(Error::Corrupt("unknown value tag")),
     }
 }
@@ -349,6 +393,54 @@ mod tests {
         buf.push(TAG_ARRAY);
         buf.extend_from_slice(&u32::MAX.to_le_bytes());
         assert!(matches!(decode_document(&buf), Err(Error::Corrupt(_))));
+    }
+
+    #[test]
+    fn test_duplicate_keys_in_a_record_decode_like_set() {
+        // Two fields named "k": the decoded document keeps one, as `set` would.
+        let mut buf = Vec::new();
+        write_len(&mut buf, 2).unwrap();
+        for n in [1_i64, 2] {
+            write_len(&mut buf, 1).unwrap();
+            buf.push(b'k');
+            buf.push(TAG_INT);
+            buf.extend_from_slice(&n.to_le_bytes());
+        }
+        let doc = decode_document(&buf).unwrap();
+        assert_eq!(doc.len(), 1);
+        assert_eq!(doc.get("k").and_then(Value::as_int), Some(2));
+    }
+
+    #[test]
+    fn test_nesting_limit_is_shared_by_encoder_and_decoder() {
+        let nest = |depth: usize| {
+            let mut v = Value::Null;
+            for _ in 0..depth {
+                v = Value::Array(vec![v]);
+            }
+            let mut d = Document::new();
+            d.set("k", v);
+            d
+        };
+        let ok = nest(MAX_NESTING_DEPTH);
+        assert_eq!(roundtrip(&ok), ok);
+        let mut buf = Vec::new();
+        assert!(matches!(
+            encode_document_into(&mut buf, &nest(MAX_NESTING_DEPTH + 1)),
+            Err(Error::ValueTooLarge)
+        ));
+        // Objects count toward the same limit.
+        let mut inner = Document::new();
+        for _ in 0..=MAX_NESTING_DEPTH {
+            let mut outer = Document::new();
+            outer.set("o", Value::Object(inner));
+            inner = outer;
+        }
+        let mut buf = Vec::new();
+        assert!(matches!(
+            encode_document_into(&mut buf, &inner),
+            Err(Error::ValueTooLarge)
+        ));
     }
 
     proptest::proptest! {

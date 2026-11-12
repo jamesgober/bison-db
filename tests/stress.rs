@@ -9,6 +9,8 @@
 //! single-operation unit tests miss. The sequence is driven by a seeded PRNG, so
 //! a failure reproduces exactly.
 
+#![cfg(feature = "std")]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

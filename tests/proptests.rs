@@ -8,6 +8,8 @@
 //!   and deletes, closing and reopening the store yields exactly the live set
 //!   the operations imply; nothing is resurrected and nothing goes missing.
 
+#![cfg(feature = "std")]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

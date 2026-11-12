@@ -10,6 +10,64 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-11
+
+Failure-path hardening. Additive API only; MSRV stays 1.85; the on-disk format
+stays at version 1 and every file written by 0.2.0 through 1.0 still opens.
+Release notes: [`docs/release/v1.1.0.md`](./docs/release/v1.1.0.md).
+
+### Added
+
+- `Error::Locked` and an exclusive open lock (a sibling `<path>.lock` file): a
+  second open of a live store, from this process or another, is refused.
+- `RecoveryMode` (`Strict`, the default, and `Salvage`), set with
+  `DbOptions::recovery` and read with `DbOptions::recovery_mode`.
+- `Db::discarded_bytes`: bytes an open removed (a torn tail, or damaged regions
+  under `Salvage`).
+- `MAX_DOCUMENT_FIELDS` (65,536) and `MAX_NESTING_DEPTH` (256), enforced on
+  write, on decode (depth) and in serde deserialization.
+- `DbOptions::sync_policy`, the getter that replaces `build_sync_policy`.
+
+### Fixed
+
+- Two handles could open one file and overwrite each other's acknowledged
+  writes; the second open now fails with `Error::Locked`.
+- A damaged length field before the end of the log made `open` truncate every
+  later record and return `Ok`. Damage before the end is now `Error::Corrupt`
+  and the file is left untouched; only a torn final record is cut off.
+- A failed rename during `compact` left the handle writing to the temporary
+  file, which the next open deleted. The handle now stays on the original.
+- After `compact` and reopen, a deleted id could be assigned again. Compaction
+  now keeps the id counter with a DELETE record for the highest id.
+- Decoding a document was quadratic in its field count; it is linear.
+- The serde visitors reserved whatever element count the input claimed; the
+  hint is now capped.
+- Decoding had no depth limit, so a deeply nested record could overflow the
+  stack on `get`, `find` or `create_index`.
+- Length fields could reserve memory thousands of times the record's size; up
+  front reservations are now capped.
+- A failed `update` or `delete` could leave secondary indexes out of step with
+  the stored documents, and a failed `fsync` left the record live in memory.
+  State now changes only after the write succeeds, and a failed sync makes the
+  store refuse writes until reopened.
+- `get` did not verify the record checksum, although the docs said it did.
+- A record id of `u64::MAX` in a file panicked `open` in debug builds and
+  wrapped the id counter in release; ids `0` and `u64::MAX` are now `Corrupt`.
+- Unindexed `find` and `range` returned results in hash order; they now match
+  the indexed order.
+
+### Changed
+
+- Replay reads the log through a 1 MiB buffer instead of two syscalls per
+  record.
+- The write buffer is trimmed after an unusually large document.
+- `DbOptions::build_sync_policy` is deprecated in favour of `sync_policy`.
+- README and docs: no ACID or write-ahead-log claim, property tests named as
+  such, the one-handle rule, the recovery rules, the platform behind the read
+  benchmark, the Windows compaction durability caveat, and the JSON mapping of
+  bytes, non-finite floats and large integers.
+- Removed the unused `loom` dev-dependency.
+
 ## [1.0.0] - 2026-06-08
 
 The stable release. The public API and the on-disk format (version 1) are now a
@@ -253,7 +311,8 @@ Initial scaffold and repository bootstrap. No domain logic yet &mdash; this rele
 - `.github/workflows/ci.yml` (Node 24 actions; fmt, clippy, test, doc, audit, deny) and `.github/FUNDING.yml`.
 
 <!-- LINKS -->
-[Unreleased]: https://github.com/jamesgober/bison-db/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/jamesgober/bison-db/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/jamesgober/bison-db/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jamesgober/bison-db/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/jamesgober/bison-db/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jamesgober/bison-db/compare/v0.7.0...v0.8.0

@@ -124,28 +124,57 @@ A **value** is a one-byte tag followed by a tag-specific payload:
 | 6 | Array | `len:u32` LE element count, then `len` values |
 | 7 | Object | a nested document body (as above) |
 
-Arrays and objects nest recursively. Every length is validated against the bytes
-remaining in the record before any allocation, so a corrupt or hostile length is
-rejected rather than driving an over-read.
+Arrays and objects nest recursively, at most `MAX_NESTING_DEPTH` (256) levels; a
+deeper record is reported as corrupt. Every length is validated against the bytes
+remaining in the record before it is used, so a corrupt or hostile length is
+rejected rather than driving an over-read, and readers reserve memory for at most
+a small fixed number of elements up front, growing only as elements decode.
+
+Field names within one document are unique when written. A reader that meets a
+repeated name keeps one field, at the position of the first occurrence, with the
+value of the last.
 
 ## Reading and recovery
 
 A reader replays records from offset 16 to the end of the file:
 
-1. Read the 8-byte frame. If fewer than 8 bytes remain, stop.
+1. Read the 8-byte frame. If fewer than 8 bytes remain, the rest is a torn tail.
 2. If `len` is out of range (`< 9` or `> MAX_RECORD_BYTES`), or the record would
-   extend past end-of-file, treat it as a torn tail and stop.
+   extend past end-of-file, search the rest of the file for an intact record (a
+   frame whose length fits and whose CRC verifies).
+   - If there is none, the rest is a torn tail.
+   - If there is one, the length was damaged in place: the file is corrupt
+     (`Corrupt`).
 3. Read `len` payload bytes and verify the CRC.
-   - On mismatch **at the end of the file**, it is a torn final write: drop it
-     and stop.
+   - On mismatch **at the end of the file**, it is a torn final write.
    - On mismatch **before** the end of the file, the file is corrupt
      (`Corrupt`).
-4. Apply the record: a PUT records the id and body location; a DELETE removes the
+4. Check the op (PUT or DELETE) and the id (neither `0` nor `u64::MAX`); anything
+   else is corrupt (`Corrupt`).
+5. Apply the record: a PUT records the id and body location; a DELETE removes the
    id.
 
-After replay, any trailing bytes beyond the last good record (a torn tail) are
-truncated, returning the file to its last consistent state. The result is an
-in-memory map from live document id to the byte offset of its most recent body.
+A torn tail, which only a crash during a write produces, is truncated, returning
+the file to its last consistent state; the number of bytes removed is reported.
+When the file is corrupt, it is left exactly as it was. The result is an
+in-memory map from live document id to the byte offset of its most recent body,
+plus the id counter: one past the highest id in any record, PUT or DELETE.
+
+A **salvage** open (an explicit option) instead skips each damaged region up to
+the next intact record, saves a byte-for-byte copy of the damaged file beside it,
+and rewrites the store from the records that verified.
+
+Readers verify a record's CRC again each time they read its body, not only during
+replay.
+
+## Compaction
+
+Compaction writes a new file holding one PUT per live document, copied byte for
+byte after its CRC verifies, and replaces the store with an atomic rename. When
+the highest id ever assigned is no longer live, a DELETE record for that id is
+written at the end of the compacted file, so replay restores the id counter and
+a deleted id is never assigned again. This uses only record kinds that version 1
+already defines; files compacted this way open in every 1.x release.
 
 ## Durability
 

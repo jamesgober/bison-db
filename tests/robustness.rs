@@ -7,6 +7,8 @@
 //! (never a panic, hang, or over-read) and that a returned store is self
 //! consistent.
 
+#![cfg(feature = "std")]
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -1,6 +1,8 @@
 //! Concurrency tests: `Db` is `Send + Sync` and works under the documented
 //! single-writer, multi-reader pattern of `Arc<RwLock<Db>>`.
 
+#![cfg(feature = "std")]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

@@ -67,21 +67,35 @@ pub enum Error {
     /// A stored record failed its integrity check or was structurally invalid.
     ///
     /// This covers a CRC mismatch, an unknown value tag, a length field that
-    /// overruns the record, or a non-UTF-8 string — any signal that the bytes
-    /// were corrupted in place after being written. A clean torn write at the
-    /// very end of the log is *not* reported here: it is recovered silently by
-    /// truncating the partial tail (see [`Db::open`](crate::Db::open)).
+    /// overruns the record, a non-UTF-8 string, or nesting deeper than
+    /// [`MAX_NESTING_DEPTH`](crate::MAX_NESTING_DEPTH): any signal that the
+    /// bytes were corrupted in place after being written. On open, damage
+    /// before the end of the log is reported here and the file is left as it
+    /// is. A torn write at the very end of the log is *not* reported here: it
+    /// is cut off and counted by [`Db::discarded_bytes`](crate::Db::discarded_bytes)
+    /// (see [`Db::open`](crate::Db::open)).
     ///
     /// The contained `&'static str` is a fixed diagnostic label, never a
     /// formatted message, so producing it allocates nothing.
     Corrupt(&'static str),
 
-    /// A value was too large to encode within the configured record limit.
+    /// A document was too large to store.
     ///
-    /// Guards against a single document growing past
-    /// [`MAX_RECORD_BYTES`](crate::MAX_RECORD_BYTES), which would otherwise
-    /// force an unbounded allocation on the read path during recovery.
+    /// Returned when a document encodes to more than
+    /// [`MAX_RECORD_BYTES`](crate::MAX_RECORD_BYTES), holds more than
+    /// [`MAX_DOCUMENT_FIELDS`](crate::MAX_DOCUMENT_FIELDS) fields in one
+    /// object, or nests deeper than
+    /// [`MAX_NESTING_DEPTH`](crate::MAX_NESTING_DEPTH). Nothing is written.
     ValueTooLarge,
+
+    /// The store is already open in another live handle.
+    ///
+    /// Returned by [`Db::open`](crate::Db::open) when another [`Db`](crate::Db)
+    /// in this process or another process has the same file open. One handle
+    /// per file is the rule: each handle appends at its own tail, so two of
+    /// them would overwrite each other's records. Share one handle across
+    /// threads instead, behind an `Arc<RwLock<Db>>`.
+    Locked,
 }
 
 #[cfg(feature = "std")]
@@ -105,7 +119,10 @@ impl fmt::Display for Error {
                 )
             }
             Error::Corrupt(what) => write!(f, "corrupt record: {what}"),
-            Error::ValueTooLarge => f.write_str("value exceeds the maximum record size"),
+            Error::ValueTooLarge => f.write_str(
+                "document exceeds the maximum record size, field count, or nesting depth",
+            ),
+            Error::Locked => f.write_str("the store is already open in another handle or process"),
         }
     }
 }
@@ -130,13 +147,13 @@ mod tests {
     #[test]
     fn test_display_corrupt_includes_label() {
         let err = Error::Corrupt("crc mismatch");
-        assert!(err.to_string().contains("crc mismatch"));
+        assert!(alloc::format!("{err}").contains("crc mismatch"));
     }
 
     #[test]
     fn test_display_unsupported_version_includes_number() {
         let err = Error::UnsupportedVersion(9);
-        assert!(err.to_string().contains('9'));
+        assert!(alloc::format!("{err}").contains('9'));
     }
 
     #[cfg(feature = "std")]

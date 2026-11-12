@@ -303,6 +303,36 @@ impl<T: Into<Value>> From<Option<T>> for Value {
     }
 }
 
+/// The most fields a single document (or nested object) may hold.
+///
+/// A store refuses to write a wider document with [`Error::ValueTooLarge`],
+/// and serde deserialization into a [`Document`] fails past it. Field lookup is
+/// a linear scan, so this bounds the cost of every read of a stored document.
+/// Records written before the limit existed still decode.
+///
+/// [`Error::ValueTooLarge`]: crate::Error::ValueTooLarge
+pub const MAX_DOCUMENT_FIELDS: usize = 65_536;
+
+/// The deepest nesting of arrays and objects a document may hold.
+///
+/// A field whose value is an array or object is at depth 1, a container
+/// inside it at depth 2, and so on. A store refuses to write a deeper document
+/// with [`Error::ValueTooLarge`] and reports a deeper stored record as
+/// [`Error::Corrupt`]; serde deserialization fails past it. The limit keeps the
+/// recursive encoder and decoder well inside a thread's stack.
+///
+/// [`Error::ValueTooLarge`]: crate::Error::ValueTooLarge
+/// [`Error::Corrupt`]: crate::Error::Corrupt
+pub const MAX_NESTING_DEPTH: usize = 256;
+
+/// The most slots any decoder reserves up front from a length it was given.
+/// Larger collections still decode; they grow as elements actually arrive, so a
+/// hostile length cannot reserve memory the input does not back.
+pub(crate) const PREALLOC_LIMIT: usize = 1024;
+
+/// Up to this many fields, duplicate detection is a plain pairwise scan.
+const SMALL_DOCUMENT: usize = 32;
+
 /// An ordered collection of named fields — the record a store holds.
 ///
 /// A document maps `String` keys to [`Value`]s and preserves the order in which
@@ -446,6 +476,67 @@ impl Document {
         self.fields.iter().any(|(k, _)| k == key)
     }
 
+    /// Appends a field without checking for an existing key. Callers that may
+    /// push duplicates finish with [`Document::dedup_last_wins`], which keeps
+    /// building an n-field document linear rather than quadratic.
+    #[inline]
+    pub(crate) fn push_field(&mut self, key: String, value: Value) {
+        self.fields.push((key, value));
+    }
+
+    /// Collapses duplicate keys the way repeated [`Document::set`] calls would:
+    /// each key keeps the position of its first occurrence and the value of
+    /// its last. Runs in O(n log n) for wide documents and allocates nothing
+    /// when there are no duplicates among a few fields.
+    pub(crate) fn dedup_last_wins(&mut self) {
+        let n = self.fields.len();
+        if n < 2 {
+            return;
+        }
+        if n <= SMALL_DOCUMENT {
+            let has_dup =
+                (1..n).any(|i| self.fields[..i].iter().any(|(k, _)| *k == self.fields[i].0));
+            if has_dup {
+                let fields = core::mem::take(&mut self.fields);
+                self.fields.reserve(fields.len());
+                for (k, v) in fields {
+                    let _ = self.set(k, v);
+                }
+            }
+            return;
+        }
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_unstable_by(|&a, &b| self.fields[a].0.cmp(&self.fields[b].0).then(a.cmp(&b)));
+        let mut keep = alloc::vec![true; n];
+        let mut any = false;
+        let mut i = 0;
+        while i < n {
+            let first = order[i];
+            let mut j = i + 1;
+            while j < n && self.fields[order[j]].0 == self.fields[first].0 {
+                j += 1;
+            }
+            if j - i > 1 {
+                any = true;
+                let last = order[j - 1];
+                let value = core::mem::take(&mut self.fields[last].1);
+                self.fields[first].1 = value;
+                for &dup in &order[i + 1..j] {
+                    keep[dup] = false;
+                }
+            }
+            i = j;
+        }
+        if any {
+            let mut idx = 0;
+            self.fields.retain(|_| {
+                let k = keep[idx];
+                idx += 1;
+                k
+            });
+        }
+    }
+
     /// Removes `key`, returning its value if it was present.
     ///
     /// Remaining fields keep their relative order.
@@ -587,10 +678,11 @@ where
     /// ```
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
         let iter = iter.into_iter();
-        let mut doc = Document::with_capacity(iter.size_hint().0);
+        let mut doc = Document::with_capacity(iter.size_hint().0.min(PREALLOC_LIMIT));
         for (k, v) in iter {
-            let _ = doc.set(k, v);
+            doc.push_field(k.into(), v.into());
         }
+        doc.dedup_last_wins();
         doc
     }
 }
@@ -598,6 +690,34 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pairs(doc: &Document) -> Vec<(&str, Option<i64>)> {
+        doc.iter().map(|(k, v)| (k, v.as_int())).collect()
+    }
+
+    #[test]
+    fn test_dedup_matches_repeated_set_small_and_wide() {
+        for n in [3_i64, 40, 500] {
+            let keys: Vec<String> = (0..n)
+                .map(|i| alloc::format!("k{}", i % (n / 3 + 1)))
+                .collect();
+            let mut by_set = Document::new();
+            let mut pushed = Document::new();
+            for (i, k) in keys.iter().enumerate() {
+                by_set.set(k.clone(), i as i64);
+                pushed.push_field(k.clone(), Value::Int(i as i64));
+            }
+            pushed.dedup_last_wins();
+            assert_eq!(pairs(&pushed), pairs(&by_set), "n = {n}");
+        }
+    }
+
+    #[test]
+    fn test_dedup_without_duplicates_keeps_everything() {
+        let doc: Document = (0..100_i64).map(|i| (alloc::format!("f{i}"), i)).collect();
+        assert_eq!(doc.len(), 100);
+        assert_eq!(doc.keys().next(), Some("f0"));
+    }
 
     #[test]
     fn test_set_existing_key_replaces_in_place() {
